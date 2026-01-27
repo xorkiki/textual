@@ -4,7 +4,9 @@ A modern, local-first book tracking and social reading app built with Swift 6 an
 
 ## Project Vision
 
-Textual is designed to be a personal and social book tracking experience that puts your reading data first. With a local-first architecture, your library is always available offline, while seamlessly syncing with Supabase when connected. Share your reading journey through custom shelves, track your progress across multiple statuses, and discover what others are reading—all while maintaining full control over your privacy.
+Reading today is fragmented, isolating, and poorly designed. People struggle to meaningfully organize what they want to read, keep track of what they are actually reading, and discover books through taste-aligned signals rather than noisy algorithms. Most existing book apps are cluttered, outdated, and visually uninspiring, making the experience feel utilitarian instead of intimate or culturally relevant.
+
+This app solves that by offering a clean, modern, and aesthetically intentional space for reading life. It provides an elegant system for sorting books, lightweight and useful stats, and social discovery grounded in real reading behavior. Long term, it expands beyond the screen to support modern-day reading salons. Through opt-in, location-based discovery, users can find people nearby reading similar books and form small, intentional groups. The goal is to make reading feel beautiful, social, and alive again, rooted in taste, proximity, and conversation rather than performance or scale.
 
 ## Tech Stack
 
