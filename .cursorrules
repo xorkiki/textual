@@ -1,0 +1,34 @@
+# Project Context: Textual Book App
+- Follow the architectural patterns in TECHNICAL_SPEC.md at all times.
+
+# Swift & SwiftUI Rules
+- Use modern Swift 6 concurrency (async/await).
+- Prefer `@Observable` macros for view models over older `ObservableObject`.
+- Always use `Lazy` containers for scrollable content.
+- Keep view bodies lightweight; move heavy logic to separate Service classes.
+
+# Data Rules
+- Ensure all SwiftData models include Codable conformance for Supabase sync.
+- Use the Repository Pattern to abstract the choice between local and remote data.
+
+# Feature Scope
+
+## 1. Shelf Curation Logic
+- Support custom shelves with public/private toggles.
+- Pre-seeded examples: 'books that ruined me', 'men i should not have dated but did anyway', 'quiet books'.
+
+## 2. User Home & Statuses
+- Track 'Currently Reading', 'To Be Read', 'Read', and 'DNF'.
+- Display 'last activity' on every book.
+
+## 3. Privacy & Social
+- All content is gated behind Auth (Email/Apple).
+- Users must follow others to see an activity feed.
+- Activity includes: started a book, finished a book, and added to public shelves.
+
+## 4. Book Detail & Notes
+- Metadata must include title, author, and cover via Nuke.
+- Ratings (5-star/numeric) and mandatory one-line notes.
+
+## 5. Offline Behavior
+- Support 'Read-only' cached views and 'Queued Actions' for ratings/shelving that sync when back online.
