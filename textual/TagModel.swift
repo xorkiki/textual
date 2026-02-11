@@ -13,8 +13,7 @@ final class Tag {
     @Attribute(.unique) var id: UUID
     var name: String
     
-    // Many-to-many relationship with Book
-    @Relationship(deleteRule: .nullify, inverse: \Book.tags)
+    // Many-to-many relationship with Book (inverse defined in BookModel)
     var books: [Book] = []
     
     init(id: UUID = UUID(), name: String) {

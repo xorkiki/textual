@@ -56,6 +56,14 @@ Rich book metadata including:
 - **Read-only Cached Views**: Browse your library even when offline
 - **Queued Actions**: Ratings and shelving actions are queued locally and sync automatically when connectivity is restored
 
+### 6. User-Driven Import (CSV / Export File)
+Import your existing book data from other apps:
+- **Export Support**: Users can export their data from other book tracking apps (typically as CSV)
+- **Upload Options**: Upload CSV files directly or paste a link to the export file
+- **Field Mapping**: Automatically parse and map CSV fields to the app's schema
+- **Review Before Import**: Preview all imported data on a "review before import" screen to verify accuracy
+- **Smart Import**: Import process includes deduplication against existing books and stores source references for traceability
+
 ## Data Models
 
 ### Book

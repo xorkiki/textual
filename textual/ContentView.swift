@@ -10,8 +10,7 @@ import SwiftData
 
 struct ContentView: View {
     var body: some View {
-        Text("Library View")
-            .font(.largeTitle)
+        LibraryView()
     }
 }
 

@@ -37,6 +37,64 @@
 			);
 			target = 2731E5402F28521700731EB4 /* textual */;
 		};
+		27B916A12F288A9D00E64769 /* Exceptions for "textual" folder in "textualTests" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				"Resources/Fonts/CormorantGaramond-Bold.ttf",
+				"Resources/Fonts/CormorantGaramond-Light.ttf",
+				"Resources/Fonts/CormorantGaramond-Medium.ttf",
+				"Resources/Fonts/CormorantGaramond-Regular.ttf",
+				"Resources/Fonts/CormorantGaramond-SemiBold.ttf",
+				"Resources/Icons/arrow-down-left.svg",
+				"Resources/Icons/arrow-down-right.svg",
+				"Resources/Icons/arrow-down.svg",
+				"Resources/Icons/arrow-left.svg",
+				"Resources/Icons/arrow-right.svg",
+				"Resources/Icons/arrow-up-left.svg",
+				"Resources/Icons/arrow-up-right.svg",
+				"Resources/Icons/arrow-up.svg",
+				Resources/Icons/bookmark.svg,
+				Resources/Icons/chat.svg,
+				Resources/Icons/community.svg,
+				"Resources/Icons/home-simple.svg",
+				Resources/Icons/menu.svg,
+				Resources/Icons/profile.svg,
+				Resources/Icons/report.svg,
+				Resources/Icons/search.svg,
+				Resources/Icons/star.svg,
+				Resources/Icons/write.svg,
+			);
+			target = 2731E5522F28521800731EB4 /* textualTests */;
+		};
+		27B916A22F288A9D00E64769 /* Exceptions for "textual" folder in "textualUITests" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				"Resources/Fonts/CormorantGaramond-Bold.ttf",
+				"Resources/Fonts/CormorantGaramond-Light.ttf",
+				"Resources/Fonts/CormorantGaramond-Medium.ttf",
+				"Resources/Fonts/CormorantGaramond-Regular.ttf",
+				"Resources/Fonts/CormorantGaramond-SemiBold.ttf",
+				"Resources/Icons/arrow-down-left.svg",
+				"Resources/Icons/arrow-down-right.svg",
+				"Resources/Icons/arrow-down.svg",
+				"Resources/Icons/arrow-left.svg",
+				"Resources/Icons/arrow-right.svg",
+				"Resources/Icons/arrow-up-left.svg",
+				"Resources/Icons/arrow-up-right.svg",
+				"Resources/Icons/arrow-up.svg",
+				Resources/Icons/bookmark.svg,
+				Resources/Icons/chat.svg,
+				Resources/Icons/community.svg,
+				"Resources/Icons/home-simple.svg",
+				Resources/Icons/menu.svg,
+				Resources/Icons/profile.svg,
+				Resources/Icons/report.svg,
+				Resources/Icons/search.svg,
+				Resources/Icons/star.svg,
+				Resources/Icons/write.svg,
+			);
+			target = 2731E55C2F28521800731EB4 /* textualUITests */;
+		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -44,6 +102,8 @@
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
 				27B9143D2F285A6200E64769 /* Exceptions for "textual" folder in "textual" target */,
+				27B916A12F288A9D00E64769 /* Exceptions for "textual" folder in "textualTests" target */,
+				27B916A22F288A9D00E64769 /* Exceptions for "textual" folder in "textualUITests" target */,
 			);
 			path = textual;
 			sourceTree = "<group>";

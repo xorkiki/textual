@@ -15,6 +15,8 @@ final class Book {
     var author: String
     var isbn: String
     var coverURL: String
+    /// Google Books API volume ID for fetching full details via volumes/{id}
+    var googleBooksVolumeId: String?
     
     // Many-to-many relationship with Tag
     @Relationship(deleteRule: .nullify, inverse: \Tag.books)
@@ -26,6 +28,7 @@ final class Book {
         author: String,
         isbn: String,
         coverURL: String = "",
+        googleBooksVolumeId: String? = nil,
         tags: [Tag] = []
     ) {
         self.id = id
@@ -33,7 +36,17 @@ final class Book {
         self.author = author
         self.isbn = isbn
         self.coverURL = coverURL
+        self.googleBooksVolumeId = googleBooksVolumeId
         self.tags = tags
+    }
+    
+    /// Volume ID to use when fetching Google Books detail (prefers googleBooksVolumeId, falls back to isbn when it looks like a volume ID)
+    var volumeIdForDetailFetch: String? {
+        if let vid = googleBooksVolumeId, !vid.isEmpty { return vid }
+        // ISBNs are typically 10 or 13 digits (with possible hyphens); volume IDs are alphanumeric
+        let digitsOnly = isbn.replacingOccurrences(of: "-", with: "").filter { $0.isNumber }
+        if digitsOnly.count == 10 || digitsOnly.count == 13 { return nil }
+        return isbn.isEmpty ? nil : isbn
     }
 }
 
@@ -46,6 +59,7 @@ extension Book {
         let author: String
         let isbn: String
         let coverURL: String
+        let googleBooksVolumeId: String?
         
         enum CodingKeys: String, CodingKey {
             case id
@@ -53,6 +67,7 @@ extension Book {
             case author
             case isbn
             case coverURL = "cover_url"
+            case googleBooksVolumeId = "google_books_volume_id"
         }
     }
     
@@ -63,7 +78,8 @@ extension Book {
             title: title,
             author: author,
             isbn: isbn,
-            coverURL: coverURL
+            coverURL: coverURL,
+            googleBooksVolumeId: googleBooksVolumeId
         )
     }
     
@@ -74,5 +90,6 @@ extension Book {
         self.author = codable.author
         self.isbn = codable.isbn
         self.coverURL = codable.coverURL
+        self.googleBooksVolumeId = codable.googleBooksVolumeId
     }
 }

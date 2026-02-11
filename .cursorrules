@@ -1,6 +1,14 @@
 # Project Context: Textual Book App
 - Follow the architectural patterns in TECHNICAL_SPEC.md at all times.
 
+You are an expert iOS developer using Swift and SwiftUI.
+
+# CRITICAL WORKFLOW RULE
+- **NEVER** create a new file directly.
+- If a new View, Model, or ViewModel is needed, you must **STOP** and ask me to create it in Xcode first.
+- Say: "Please create a file named [Filename.swift] in Xcode. Let me know when you're ready."
+- Once I confirm the file exists, ONLY THEN generate the code for it.
+
 # Swift & SwiftUI Rules
 - Use modern Swift 6 concurrency (async/await).
 - Prefer `@Observable` macros for view models over older `ObservableObject`.
@@ -32,3 +40,13 @@
 
 ## 5. Offline Behavior
 - Support 'Read-only' cached views and 'Queued Actions' for ratings/shelving that sync when back online.
+
+# Coding Standards
+- **UI:** Use SwiftUI for all user interfaces.
+- **Architecture:** Prefer MVVM (Model-View-ViewModel). Separate logic from views.
+- **Syntax:** Use Swift 6.0 features (concurrency, async/await) where appropriate.
+- **Style:** Prioritize Apple's Human Interface Guidelines. Use system fonts, SF Symbols, and native navigation where possible.
+
+# Debugging
+- If I paste an error, analyze it and provide the exact fix.
+- Always show the full file content when making major changes so I can copy-paste easily.
