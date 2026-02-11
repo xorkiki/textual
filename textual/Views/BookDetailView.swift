@@ -40,12 +40,6 @@ struct BookDetailView: View {
                 }
                 .buttonStyle(IconButtonStyle())
             }
-            ToolbarItem(placement: .principal) {
-                Text("Book Details")
-                    .font(.custom("CormorantGaramond-Regular", size: 20))
-                    .textCase(.uppercase)
-                    .foregroundColor(.paper)
-            }
         }
         .onAppear {
             Task { await viewModel.fetchVolume(book: book) }
@@ -164,7 +158,7 @@ struct BookDetailView: View {
                             .textStyle(.subheadingSmall)
                             .foregroundColor(.paper)
                         
-                        Text(AttributedString(html: desc))
+                        Text(AttributedString(html: desc, color: .paper, font: .bodyMedium))
                             .textStyle(.bodyMedium)
                             .foregroundColor(.paper)
                             .lineSpacing(6)

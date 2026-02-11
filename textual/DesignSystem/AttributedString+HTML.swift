@@ -11,9 +11,10 @@ import UIKit
 #endif
 
 extension AttributedString {
-    /// Renders HTML string to AttributedString with design system paper color, or returns plain text if parsing fails.
+    /// Renders HTML string to AttributedString with design system color and optional font.
     /// Google Books descriptions use simple HTML (b, i, br). We parse and convert, falling back to stripped text.
-    init(html: String, color: Color = .paper) {
+    /// Pass a design system font so the parsed HTML uses it; otherwise the parser's default (system font) is kept and can override the view's .font().
+    init(html: String, color: Color = .paper, font: DesignSystemFont? = nil) {
         if let data = html.data(using: .utf8),
            let nsAttr = try? NSAttributedString(
             data: data,
@@ -26,6 +27,9 @@ extension AttributedString {
             let mutable = NSMutableAttributedString(attributedString: nsAttr)
             let range = NSRange(location: 0, length: mutable.length)
             mutable.addAttribute(.foregroundColor, value: UIColor(color), range: range)
+            if let font = font {
+                mutable.addAttribute(.font, value: font.uiFont, range: range)
+            }
             do {
                 self = try AttributedString(mutable, including: \.uiKit)
             } catch {

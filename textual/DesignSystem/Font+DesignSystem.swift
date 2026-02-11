@@ -58,6 +58,30 @@ extension Font {
     }
 }
 
+extension DesignSystemFont {
+    /// Returns the corresponding UIFont for use in attributed strings (e.g. HTML-rendered body text).
+    var uiFont: UIFont {
+        let (name, size) = fontNameAndSize
+        return UIFont(name: name, size: size) ?? UIFont.systemFont(ofSize: size)
+    }
+
+    private var fontNameAndSize: (name: String, size: CGFloat) {
+        switch self {
+        case .displayHero: return ("CormorantGaramond-Regular", 64)
+        case .heading1: return ("CormorantGaramond-Regular", 48)
+        case .heading2: return ("CormorantGaramond-Regular", 36)
+        case .heading3: return ("CormorantGaramond-Regular", 28)
+        case .subheadingLarge: return ("LamarPen-Regular", 24)
+        case .subheadingSmall: return ("LamarPen-Regular", 18)
+        case .bodyLarge: return ("PlusJakartaSans-Regular", 18)
+        case .bodyMedium: return ("PlusJakartaSans-Regular", 16)
+        case .bodySmall: return ("PlusJakartaSans-Regular", 14)
+        case .uiButton: return ("PlusJakartaSans-Medium", 16)
+        case .uiLabel: return ("PlusJakartaSans-Regular", 12)
+        }
+    }
+}
+
 extension View {
     func textStyle(_ style: DesignSystemFont) -> some View {
         self.modifier(DesignSystemTextModifier(style: style))
