@@ -9,26 +9,12 @@ import SwiftUI
 import SwiftData
 import Foundation
 
-// #region agent log
-private func _dbgView(_ msg: String, loc: String, hyp: String, data: [String: Any] = [:]) {
-    let payload: [String: Any] = ["timestamp": Int(Date().timeIntervalSince1970 * 1000), "sessionId": "debug-session", "runId": "run1", "location": loc, "message": msg, "data": data, "hypothesisId": hyp]
-    guard let json = try? JSONSerialization.data(withJSONObject: payload), let line = String(data: json, encoding: .utf8), let bytes = (line + "\n").data(using: .utf8) else { return }
-    let path = "/Users/kiki/Desktop/textual/textual/.cursor/debug.log"
-    if !FileManager.default.fileExists(atPath: path) { FileManager.default.createFile(atPath: path, contents: nil) }
-    if let fh = try? FileHandle(forUpdating: URL(fileURLWithPath: path)) { fh.seekToEndOfFile(); fh.write(bytes); try? fh.close() }
-}
-// #endregion
-
 struct BookDetailView: View {
     let book: Book
     @StateObject private var viewModel = BookDetailViewModel()
     @Environment(\.dismiss) private var dismiss
     
     var body: some View {
-        // #region agent log
-        let branch: String = viewModel.isLoading ? "loading" : (viewModel.errorMessage != nil ? "error" : (viewModel.volume != nil ? "content" : "fallback"))
-        let _ = _dbgView("body evaluated", loc: "BookDetailView.body", hyp: "A,D,E", data: ["branch": branch, "bookId": book.id.uuidString])
-        // #endregion
         ZStack {
             Color.inkwell
                 .ignoresSafeArea()
@@ -43,7 +29,7 @@ struct BookDetailView: View {
                 fallbackView
             }
         }
-        .id(viewModel.volume?.id ?? "\(viewModel.isLoading)-\(viewModel.errorMessage ?? "nil")")
+        .id(book.id)
         .navigationBarTitleDisplayMode(.inline)
         .navigationBarBackButtonHidden(true)
         .toolbarBackground(Color.inkwell, for: .navigationBar)
@@ -62,9 +48,6 @@ struct BookDetailView: View {
             }
         }
         .onAppear {
-            // #region agent log
-            _dbgView("onAppear", loc: "BookDetailView.onAppear", hyp: "C", data: ["bookId": book.id.uuidString])
-            // #endregion
             Task { await viewModel.fetchVolume(book: book) }
         }
     }
@@ -136,7 +119,7 @@ struct BookDetailView: View {
             VStack(alignment: .leading, spacing: 24) {
                 // Cover + Title block
                 HStack(alignment: .top, spacing: 20) {
-                    coverImage(urlString: viewModel.coverURL(from: volume))
+                    coverImage(urlString: book.coverURL.isEmpty ? viewModel.coverURL(from: volume) : book.coverURL)
                     
                     VStack(alignment: .leading, spacing: 8) {
                         Text(viewModel.title(from: volume))
@@ -194,27 +177,9 @@ struct BookDetailView: View {
     
     @ViewBuilder
     private func coverImage(urlString: String) -> some View {
-        if let url = URL(string: urlString), !urlString.isEmpty {
-            AsyncImage(url: url) { phase in
-                switch phase {
-                case .empty:
-                    Rectangle()
-                        .fill(Color.velvet.opacity(0.3))
-                        .overlay { ProgressView().tint(.paper) }
-                case .success(let image):
-                    image
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                case .failure:
-                    coverPlaceholder
-                @unknown default:
-                    coverPlaceholder
-                }
-            }
-            .frame(width: 140, height: 210)
-            .cornerRadius(8)
-            .clipped()
-            .shadow(color: .inkwell.opacity(0.3), radius: 8, x: 0, y: 4)
+        if !urlString.isEmpty {
+            BookCoverImage(urlString: urlString, width: 140, height: 210)
+                .shadow(color: .inkwell.opacity(0.3), radius: 8, x: 0, y: 4)
         } else {
             coverPlaceholder
         }

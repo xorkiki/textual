@@ -8,16 +8,6 @@
 import Foundation
 import Combine
 
-// #region agent log
-private func _dbg(_ msg: String, loc: String, hyp: String, data: [String: Any] = [:]) {
-    let payload: [String: Any] = ["timestamp": Int(Date().timeIntervalSince1970 * 1000), "sessionId": "debug-session", "runId": "run1", "location": loc, "message": msg, "data": data, "hypothesisId": hyp]
-    guard let json = try? JSONSerialization.data(withJSONObject: payload), let line = String(data: json, encoding: .utf8), let bytes = (line + "\n").data(using: .utf8) else { return }
-    let path = "/Users/kiki/Desktop/textual/textual/.cursor/debug.log"
-    if !FileManager.default.fileExists(atPath: path) { FileManager.default.createFile(atPath: path, contents: nil) }
-    if let fh = try? FileHandle(forUpdating: URL(fileURLWithPath: path)) { fh.seekToEndOfFile(); fh.write(bytes); try? fh.close() }
-}
-// #endregion
-
 @MainActor
 final class BookDetailViewModel: ObservableObject {
     @Published var volume: GoogleBooksService.BookItem?
@@ -27,10 +17,7 @@ final class BookDetailViewModel: ObservableObject {
     private let booksService = GoogleBooksService()
 
     func fetchVolume(book: Book) async {
-        // #region agent log
-        if isLoading { _dbg("fetchVolume skipped already loading", loc: "BookDetailViewModel.fetchVolume", hyp: "C", data: ["bookId": book.id.uuidString]); return }
-        _dbg("fetchVolume started", loc: "BookDetailViewModel.fetchVolume", hyp: "C", data: ["bookId": book.id.uuidString, "hasGoogleId": book.googleBooksVolumeId != nil])
-        // #endregion
+        if isLoading { return }
         isLoading = true
         errorMessage = nil
         volume = nil
@@ -53,9 +40,6 @@ final class BookDetailViewModel: ObservableObject {
         }
 
         guard let id = volumeIdToUse, !id.isEmpty else {
-            // #region agent log
-            _dbg("fetchVolume no id", loc: "BookDetailViewModel.fetchVolume", hyp: "F", data: ["bookId": book.id.uuidString])
-            // #endregion
             errorMessage = "Could not find book details."
             isLoading = false
             return
@@ -63,14 +47,8 @@ final class BookDetailViewModel: ObservableObject {
 
         do {
             let result = try await booksService.fetchVolume(id: id)
-            // #region agent log
-            _dbg("about to set volume", loc: "BookDetailViewModel.fetchVolume", hyp: "B", data: ["volumeId": id])
-            // #endregion
             volume = result
             isLoading = false
-            // #region agent log
-            _dbg("volume set", loc: "BookDetailViewModel.fetchVolume", hyp: "A,E", data: ["hasVolume": volume != nil])
-            // #endregion
         } catch {
             // Fallback: if volume ID failed (e.g. 404 after Google merged editions), try resolving by ISBN
             let digitsOnly = book.isbn.replacingOccurrences(of: "-", with: "").filter { $0.isNumber }
@@ -85,9 +63,6 @@ final class BookDetailViewModel: ObservableObject {
                     volume = nil
                 }
             } else {
-                // #region agent log
-                _dbg("fetchVolume catch", loc: "BookDetailViewModel.fetchVolume", hyp: "F", data: ["bookId": book.id.uuidString, "error": String(describing: error)])
-                // #endregion
                 errorMessage = "Failed to load book details"
                 volume = nil
             }

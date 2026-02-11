@@ -187,35 +187,10 @@ struct BookSearchResultRow: View {
     var body: some View {
         Button(action: onTap) {
             HStack(spacing: 16) {
-                // Cover Image
-                if let coverURL = URL(string: viewModel.extractCoverURL(from: item)) {
-                    AsyncImage(url: coverURL) { phase in
-                        switch phase {
-                        case .empty:
-                            Rectangle()
-                                .fill(Color.velvet.opacity(0.3))
-                                .overlay {
-                                    ProgressView()
-                                        .tint(.paper)
-                                }
-                        case .success(let image):
-                            image
-                                .resizable()
-                                .aspectRatio(contentMode: .fit)
-                        case .failure:
-                            Rectangle()
-                                .fill(Color.velvet.opacity(0.3))
-                                .overlay {
-                                    Image(systemName: "book.closed")
-                                        .foregroundColor(.ghost)
-                                }
-                        @unknown default:
-                            Rectangle()
-                                .fill(Color.velvet.opacity(0.3))
-                        }
-                    }
-                    .frame(width: 60, height: 90)
-                    .cornerRadius(4)
+                // Cover Image (URLSession with User-Agent so Google Books accepts the request)
+                let coverURLString = viewModel.extractCoverURL(from: item)
+                if !coverURLString.isEmpty {
+                    BookCoverImage(urlString: coverURLString, width: 60, height: 90)
                 } else {
                     Rectangle()
                         .fill(Color.velvet.opacity(0.3))
