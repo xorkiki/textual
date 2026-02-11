@@ -12,8 +12,9 @@
 - `isbn`: String (Unique index)
 - `title`: String
 - `author`: String
+- `coverURL`: String
+- `googleBooksVolumeId`: String? (optional – Google Books volume ID for detail fetches)
 - `tags`: Relationship to [Tag]
-- `isPublic`: Bool (Sync to Supabase)
 
 ## Performance Requirements
 - **Local-First:** All UI reads must come from SwiftData `@Query`.

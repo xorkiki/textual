@@ -72,11 +72,25 @@ final class BookDetailViewModel: ObservableObject {
             _dbg("volume set", loc: "BookDetailViewModel.fetchVolume", hyp: "A,E", data: ["hasVolume": volume != nil])
             // #endregion
         } catch {
-            // #region agent log
-            _dbg("fetchVolume catch", loc: "BookDetailViewModel.fetchVolume", hyp: "F", data: ["bookId": book.id.uuidString, "error": String(describing: error)])
-            // #endregion
-            errorMessage = "Failed to load book details"
-            volume = nil
+            // Fallback: if volume ID failed (e.g. 404 after Google merged editions), try resolving by ISBN
+            let digitsOnly = book.isbn.replacingOccurrences(of: "-", with: "").filter { $0.isNumber }
+            let hasValidIsbn = digitsOnly.count == 10 || digitsOnly.count == 13
+            if hasValidIsbn, let resolvedId = try? await booksService.searchBookId(isbn: book.isbn), !resolvedId.isEmpty {
+                do {
+                    let result = try await booksService.fetchVolume(id: resolvedId)
+                    volume = result
+                    errorMessage = nil
+                } catch {
+                    errorMessage = "Failed to load book details"
+                    volume = nil
+                }
+            } else {
+                // #region agent log
+                _dbg("fetchVolume catch", loc: "BookDetailViewModel.fetchVolume", hyp: "F", data: ["bookId": book.id.uuidString, "error": String(describing: error)])
+                // #endregion
+                errorMessage = "Failed to load book details"
+                volume = nil
+            }
             isLoading = false
         }
     }
@@ -105,17 +119,8 @@ final class BookDetailViewModel: ObservableObject {
     }
     
     func coverURL(from item: GoogleBooksService.BookItem) -> String {
-        var urlString: String?
-        if let thumbnail = item.volumeInfo?.imageLinks?.thumbnail {
-            urlString = thumbnail
-        } else if let smallThumbnail = item.volumeInfo?.imageLinks?.smallThumbnail {
-            urlString = smallThumbnail
-        }
-        guard var url = urlString else { return "" }
-        if url.hasPrefix("http://") {
-            url = url.replacingOccurrences(of: "http://", with: "https://")
-        }
-        return url
+        let urlString = item.volumeInfo?.imageLinks?.thumbnail ?? item.volumeInfo?.imageLinks?.smallThumbnail
+        return GoogleBooksService.secureImageURL(urlString)
     }
     
     func averageRating(from item: GoogleBooksService.BookItem) -> Double? {

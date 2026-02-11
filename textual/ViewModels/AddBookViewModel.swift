@@ -73,25 +73,8 @@ final class AddBookViewModel {
     }
     
     func extractCoverURL(from item: GoogleBooksService.BookItem) -> String {
-        // Prefer thumbnail, fallback to smallThumbnail
-        var urlString: String?
-        
-        if let thumbnail = item.volumeInfo?.imageLinks?.thumbnail {
-            urlString = thumbnail
-        } else if let smallThumbnail = item.volumeInfo?.imageLinks?.smallThumbnail {
-            urlString = smallThumbnail
-        }
-        
-        guard var url = urlString else {
-            return ""
-        }
-        
-        // Convert HTTP to HTTPS
-        if url.hasPrefix("http://") {
-            url = url.replacingOccurrences(of: "http://", with: "https://")
-        }
-        
-        return url
+        let urlString = item.volumeInfo?.imageLinks?.thumbnail ?? item.volumeInfo?.imageLinks?.smallThumbnail
+        return GoogleBooksService.secureImageURL(urlString)
     }
     
     func extractAuthor(from item: GoogleBooksService.BookItem) -> String {

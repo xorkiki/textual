@@ -74,7 +74,8 @@ actor GoogleBooksService {
         }
     }
     
-    /// Fetches full volume data using volumes/{id} endpoint
+    /// Fetches full volume data using volumes/{id} endpoint.
+    /// Throws `ServiceError.notFound` on 404 so callers can fall back to ISBN search.
     func fetchVolume(id: String) async throws -> BookItem {
         let urlString = "\(baseURL)/\(id)"
         guard let url = URL(string: urlString) else {
@@ -83,11 +84,16 @@ actor GoogleBooksService {
         
         let (data, response) = try await URLSession.shared.data(from: url)
         
-        if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode != 200 {
-            if let errorString = String(data: data, encoding: .utf8) {
-                print("❌ Volume API Error (\(httpResponse.statusCode)): \(errorString)")
+        if let httpResponse = response as? HTTPURLResponse {
+            guard httpResponse.statusCode == 200 else {
+                if let errorString = String(data: data, encoding: .utf8) {
+                    print("❌ Volume API Error (\(httpResponse.statusCode)): \(errorString)")
+                }
+                if httpResponse.statusCode == 404 {
+                    throw ServiceError.notFound
+                }
+                throw ServiceError.noResults
             }
-            throw ServiceError.noResults
         }
         
         let volumeResponse = try JSONDecoder().decode(VolumeResponse.self, from: data)
@@ -101,7 +107,7 @@ actor GoogleBooksService {
     func searchBookId(isbn: String) async throws -> String? {
         let query = "isbn:\(isbn)"
         guard let encodedQuery = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else { return nil }
-        let urlString = "\(baseURL)?q=\(encodedQuery)&maxResults=1"
+        let urlString = "\(baseURL)?q=\(encodedQuery)&maxResults=1&printType=books"
         guard let url = URL(string: urlString) else { throw ServiceError.invalidURL }
         let (data, response) = try await URLSession.shared.data(from: url)
         if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode != 200 {
@@ -115,12 +121,18 @@ actor GoogleBooksService {
         return decoded.items?.first?.id
     }
     
-    func searchBooks(query: String) async throws -> [BookItem] {
-        guard let encodedQuery = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else {
+    /// Search by title (uses intitle: for better relevance). Supports pagination.
+    /// - Parameters:
+    ///   - query: Search text (e.g. book title); will be prefixed with intitle:
+    ///   - startIndex: Offset for pagination (0 = first page, 40 = second page when using maxResults=40)
+    /// - Returns: Up to 40 book items (books only, excludes magazines/periodicals)
+    func searchBooks(query: String, startIndex: Int = 0) async throws -> [BookItem] {
+        let titleQuery = "intitle:\(query)"
+        guard let encodedQuery = titleQuery.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else {
             throw ServiceError.invalidQuery
         }
-        
-        let urlString = "\(baseURL)?q=\(encodedQuery)&maxResults=20"
+        let maxResults = 40
+        let urlString = "\(baseURL)?q=\(encodedQuery)&maxResults=\(maxResults)&startIndex=\(startIndex)&printType=books"
         print("🔍 Searching Google Books API: \(urlString)")
         
         guard let url = URL(string: urlString) else {
@@ -192,10 +204,20 @@ actor GoogleBooksService {
         }
     }
     
+    /// Returns a secure (HTTPS) URL string for use with Nuke/ATS. Google often returns http.
+    static func secureImageURL(_ urlString: String?) -> String {
+        guard var url = urlString, !url.isEmpty else { return "" }
+        if url.hasPrefix("http://") {
+            url = url.replacingOccurrences(of: "http://", with: "https://")
+        }
+        return url
+    }
+
     enum ServiceError: Error {
         case invalidQuery
         case invalidURL
         case noResults
+        case notFound
         case decodingFailed(Error)
     }
 }

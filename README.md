@@ -72,6 +72,7 @@ Import your existing book data from other apps:
 - `title`: String
 - `author`: String
 - `coverURL`: String
+- `googleBooksVolumeId`: String? (optional – Google Books volume ID for detail fetches)
 - `tags`: Many-to-many relationship with Tag
 
 ### Tag
