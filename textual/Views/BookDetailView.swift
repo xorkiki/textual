@@ -19,15 +19,7 @@ struct BookDetailView: View {
             Color.inkwell
                 .ignoresSafeArea()
             
-            if viewModel.isLoading {
-                loadingView
-            } else if let error = viewModel.errorMessage {
-                errorView(message: error)
-            } else if let volume = viewModel.volume {
-                contentView(volume: volume)
-            } else {
-                fallbackView
-            }
+            contentView(volume: viewModel.volume ?? viewModel.savedVolume(book: book))
         }
         .id(book.id)
         .navigationBarTitleDisplayMode(.inline)
@@ -41,79 +33,17 @@ struct BookDetailView: View {
                 .buttonStyle(IconButtonStyle())
             }
         }
-        .onAppear {
-            Task { await viewModel.fetchVolume(book: book) }
+        .task(id: book.id) {
+            await viewModel.fetchVolume(book: book)
         }
     }
     
-    private var loadingView: some View {
+    private func contentView(volume: BookCatalogService.BookItem) -> some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                // Cover skeleton
-                Skeleton()
-                    .frame(width: 140, height: 210)
-                    .cornerRadius(8)
-                
-                VStack(alignment: .leading, spacing: 8) {
-                    Skeleton()
-                        .frame(width: 200, height: 28)
-                    Skeleton()
-                        .frame(width: 120, height: 18)
-                }
-                
-                Skeleton()
-                    .frame(height: 120)
-                
-                ProgressView()
-                    .tint(.paper)
-                    .frame(maxWidth: .infinity)
-                    .padding(.top, 20)
-            }
-            .padding()
-        }
-    }
-    
-    private func errorView(message: String) -> some View {
-        VStack(spacing: 16) {
-            Image(systemName: "exclamationmark.triangle")
-                .font(.system(size: 48))
-                .foregroundColor(.ghost)
-            Text(message)
-                .textStyle(.bodyMedium)
-                .foregroundColor(.ghost)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal)
-            TonalButton(title: "Go Back", action: { dismiss() })
-                .frame(width: 200)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-    
-    private var fallbackView: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "book.closed")
-                .font(.system(size: 48))
-                .foregroundColor(.ghost)
-            Text("Details not available")
-                .textStyle(.heading3)
-                .foregroundColor(.paper)
-            Text("This book may have been added before detail lookup was available.")
-                .textStyle(.bodySmall)
-                .foregroundColor(.ghost)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal)
-            TonalButton(title: "Go Back", action: { dismiss() })
-                .frame(width: 200)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-    
-    private func contentView(volume: GoogleBooksService.BookItem) -> some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
+            LazyVStack(alignment: .leading, spacing: 24) {
                 // Cover + Title block
                 HStack(alignment: .top, spacing: 20) {
-                    coverImage(urlString: book.coverURL.isEmpty ? viewModel.coverURL(from: volume) : book.coverURL)
+                    coverImage(urlString: viewModel.coverURL(from: volume))
                     
                     VStack(alignment: .leading, spacing: 8) {
                         Text(viewModel.title(from: volume))
@@ -139,6 +69,42 @@ struct BookDetailView: View {
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+                if let reading = book.importedReading {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Your reading").textStyle(.subheadingSmall).foregroundColor(.paper)
+                        Text(reading.statusLabel).textStyle(.bodyMedium).foregroundColor(.paper)
+                        if let rating = reading.rating {
+                            Text("Your rating: \(rating.formatted()) / 5").textStyle(.bodySmall).foregroundColor(.ghost)
+                        }
+                        if let count = reading.readCount, count > 0 {
+                            Text("Read \(count) \(count == 1 ? "time" : "times")").textStyle(.bodySmall).foregroundColor(.ghost)
+                        }
+                        if let date = reading.lastDateRead ?? reading.periods.last?.finishedOn {
+                            Text("Last finished: \(date)").textStyle(.bodySmall).foregroundColor(.ghost)
+                        }
+                    }
+                }
+
+                if viewModel.isLoading {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .tint(.paper)
+                        Text("Loading additional details…")
+                            .textStyle(.bodySmall)
+                            .foregroundColor(.ghost)
+                    }
+                } else if let message = viewModel.errorMessage {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text(message)
+                            .textStyle(.bodySmall)
+                            .foregroundColor(.ghost)
+                        TonalButton(title: "Retry", action: {
+                            Task { await viewModel.fetchVolume(book: book, forceRefresh: true) }
+                        })
+                        .frame(width: 120)
+                    }
                 }
                 
                 // Categories

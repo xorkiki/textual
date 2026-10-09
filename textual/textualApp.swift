@@ -25,21 +25,7 @@ struct textualApp: App {
     }()
     
     init() {
-        // Debug: Print all available font families
-        printAvailableFonts()
         configureNavigationBarAppearance()
-    }
-    
-    private func printAvailableFonts() {
-        print("🔍 Available Font Families:")
-        for family in UIFont.familyNames.sorted() {
-            print("  Family: \(family)")
-            for name in UIFont.fontNames(forFamilyName: family) {
-                if name.contains("Cormorant") || name.contains("Lamar") || name.contains("Jakarta") || name.contains("Special") {
-                    print("    - \(name)")
-                }
-            }
-        }
     }
     
     private func configureNavigationBarAppearance() {
@@ -52,7 +38,6 @@ struct textualApp: App {
         
         // Try to find the correct font name
         let cormorantFont = findFont(containing: "Cormorant") ?? UIFont.systemFont(ofSize: 28, weight: .bold)
-        print("📝 Using font: \(cormorantFont.fontName)")
         
         appearance.largeTitleTextAttributes = [
             .font: cormorantFont.withSize(28),
@@ -81,7 +66,7 @@ struct textualApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            ContentView(legacyContainer: sharedModelContainer)
         }
         .modelContainer(sharedModelContainer)
     }

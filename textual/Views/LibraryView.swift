@@ -7,15 +7,27 @@
 
 import SwiftUI
 import SwiftData
+import Nuke
+import NukeUI
 
 struct LibraryView: View {
-    @Query(sort: \Book.title) private var books: [Book]
+    var repository: LibraryRepository? = nil
+    var bottomNavigationInset: CGFloat = 0
+    @State private var showConflicts = false
+    @State private var libraryError: String?
+    @Query(filter: #Predicate<Book> { !$0.isRemovedFromLibrary }, sort: \Book.title) private var books: [Book]
     @Environment(\.modelContext) private var modelContext
     @State private var showAddBook = false
     @State private var selectedBook: Book?
+    @State private var syncBannerHeight: CGFloat = 0
+    private let headerHeight: CGFloat = 60
+
+    private var bottomOverlayHeight: CGFloat {
+        bottomNavigationInset + (repository?.message == nil ? 0 : syncBannerHeight + 8)
+    }
 
     let columns = [
-        GridItem(.adaptive(minimum: 120), spacing: 16)
+        GridItem(.adaptive(minimum: 120), spacing: 16, alignment: .top)
     ]
 
     var body: some View {
@@ -27,9 +39,11 @@ struct LibraryView: View {
 
                 ScrollView {
                     if books.isEmpty {
-                        // Empty state - blank but navigation/toolbar still visible
-                        Spacer()
-                            .frame(height: 100)
+                        ContentUnavailableView("Your archive starts here", systemImage: "books.vertical",
+                            description: Text("Tap + to find and save your first book."))
+                            .foregroundStyle(Color.paper)
+                            .padding(.top, headerHeight + 8)
+                            .padding(.bottom, bottomOverlayHeight + 12)
                     } else {
                         LazyVGrid(columns: columns, spacing: 20) {
                             ForEach(books) { book in
@@ -48,32 +62,66 @@ struct LibraryView: View {
                                 }
                             }
                         }
-                        .padding()
+                        .padding(.horizontal, 16)
+                        .padding(.top, headerHeight + 8)
+                        .padding(.bottom, bottomOverlayHeight + 12)
                     }
                 }
-            }
-            .navigationBarTitleDisplayMode(.large)
-            .toolbarBackground(Color.inkwell, for: .navigationBar)
-            .toolbar {
-                ToolbarItem(placement: .principal) {
-                    Text("My Library")
-                        .font(.custom("CormorantGaramond-Regular", size: 28))
-                        .textCase(.uppercase)
-                        .foregroundColor(.paper)
+                .scrollIndicators(.hidden)
+                .clipped()
+                .refreshable { await repository?.synchronize() }
+
+                // The books continue behind the controls. Only their overlapping
+                // regions fade; the central reading area remains fully visible.
+                VStack(spacing: 0) {
+                    LinearGradient(stops: [
+                        .init(color: .inkwell, location: 0),
+                        .init(color: .inkwell.opacity(0.92), location: 0.55),
+                        .init(color: .clear, location: 1)
+                    ], startPoint: .top, endPoint: .bottom)
+                    .frame(height: headerHeight + 12)
+                    Spacer(minLength: 0)
+                    LinearGradient(stops: [
+                        .init(color: .clear, location: 0),
+                        .init(color: .inkwell.opacity(0.9), location: 0.7),
+                        .init(color: .inkwell, location: 1)
+                    ], startPoint: .top, endPoint: .bottom)
+                    .frame(height: bottomOverlayHeight + 12)
                 }
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button {
-                        showAddBook = true
-                    } label: {
-                        Image(systemName: "plus")
-                            .foregroundColor(.paper)
-                            .font(.system(size: 20, weight: .medium))
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+            }
+            .overlay(alignment: .top) { libraryHeader }
+            .overlay(alignment: .bottom) {
+                if let repository, let message = repository.message {
+                    HStack(spacing: 12) {
+                        Text(message).font(.caption).foregroundStyle(Color.paper)
+                        Spacer()
+                        if repository.syncState == .conflict {
+                            Button("Review") { showConflicts = true }
+                        } else if repository.syncState != .syncing {
+                            Button("Retry") { Task { await repository.synchronize() } }
+                        }
                     }
+                    .padding()
+                    .background(Color.inkwell)
+                    .tint(.paper)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { syncBannerHeight = $0 }
+                    .padding(.bottom, bottomNavigationInset + 8)
                 }
             }
+            .toolbar(.hidden, for: .navigationBar)
             .sheet(isPresented: $showAddBook) {
-                AddBookView()
+                AddBookView(repository: repository)
             }
+            .sheet(isPresented: $showConflicts) {
+                if let repository { LibraryConflictsView(repository: repository) }
+            }
+            .alert("Couldn’t update library", isPresented: Binding(
+                get: { libraryError != nil }, set: { if !$0 { libraryError = nil } }
+            )) {
+                Button("OK") { libraryError = nil }
+            } message: { Text(libraryError ?? "") }
             .sheet(item: $selectedBook) { book in
                 NavigationStack {
                     BookDetailView(book: book)
@@ -81,15 +129,45 @@ struct LibraryView: View {
             }
         }
     }
+
+    private var libraryHeader: some View {
+        HStack(spacing: 0) {
+            Color.clear.frame(width: 44, height: 44).accessibilityHidden(true)
+            Text("My Archive")
+                .font(.custom("CormorantGaramond-Regular", size: 28))
+                .textCase(.uppercase)
+                .foregroundStyle(Color.paper)
+                .frame(maxWidth: .infinity)
+                .accessibilityAddTraits(.isHeader)
+            Button { showAddBook = true } label: {
+                Image(systemName: "plus")
+                    .font(.system(size: 24, weight: .regular))
+                    .foregroundStyle(Color.paper)
+                    .frame(width: 44, height: 44)
+                    .background(Color.velvet, in: Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Add a book")
+        }
+        .padding(.horizontal, 16)
+        .frame(height: headerHeight)
+    }
     
     private func deleteBook(_ book: Book) {
-        modelContext.delete(book)
         do {
-            try modelContext.save()
+            if let repository {
+                try repository.remove(book)
+                Task { await repository.synchronize() }
+            } else {
+                modelContext.delete(book)
+                try modelContext.save()
+            }
         } catch {
-            print("Failed to delete book: \(error.localizedDescription)")
+            modelContext.rollback()
+            libraryError = "Your book couldn’t be removed. Please try again."
         }
     }
+
 }
 
 struct BookGridItem: View {
@@ -97,7 +175,7 @@ struct BookGridItem: View {
     
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            // Cover Image (URLSession with User-Agent so Google Books accepts the request)
+            // Cached, downsampled book cover
             if !book.coverURL.isEmpty {
                 BookCoverImage(urlString: book.coverURL, width: 120, height: 180)
             } else {
@@ -117,7 +195,7 @@ struct BookGridItem: View {
             Text(book.title)
                 .textStyle(.bodyMedium)
                 .foregroundColor(.paper)
-                .lineLimit(2)
+                .lineLimit(2, reservesSpace: true)
                 .multilineTextAlignment(.leading)
             
             // Author
@@ -130,131 +208,62 @@ struct BookGridItem: View {
     }
 }
 
-/// Limits concurrent Google Books image requests and caches results to avoid 429 rate limiting.
-private actor BookCoverImageLoader {
-    static let shared = BookCoverImageLoader()
-    private var cache: [String: UIImage] = [:]
-    private var inFlight = 0
-    private let maxConcurrent = 3
-    private var waiters: [CheckedContinuation<Void, Never>] = []
-
-    func cached(_ urlString: String) -> UIImage? {
-        cache[urlString]
-    }
-
-    func setCached(_ urlString: String, _ image: UIImage) {
-        cache[urlString] = image
-    }
-
-    func beginLoad() async {
-        while inFlight >= maxConcurrent {
-            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-                waiters.append(cont)
-            }
-        }
-        inFlight += 1
-    }
-
-    func endLoad() {
-        inFlight -= 1
-        if let next = waiters.first {
-            waiters.removeFirst()
-            next.resume()
-        }
-    }
-
-    func load(urlString: String) async -> UIImage? {
-        if let cached = cache[urlString] { return cached }
-        await beginLoad()
-        defer { endLoad() }
-        guard let url = URL(string: urlString), !urlString.isEmpty else { return nil }
-        var request = URLRequest(url: url)
-        request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1", forHTTPHeaderField: "User-Agent")
-        do {
-            var (data, response) = try await URLSession.shared.data(for: request)
-            var statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
-            if statusCode == 429 {
-                try await Task.sleep(nanoseconds: 1_500_000_000)
-                let retry = try await URLSession.shared.data(for: request)
-                data = retry.0
-                response = retry.1
-                statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
-            }
-            if let uiImage = UIImage(data: data) {
-                cache[urlString] = uiImage
-                return uiImage
-            }
-            return nil
-        } catch {
-            return nil
-        }
-    }
-}
-
-/// Loads a book cover from URL with a browser User-Agent (Google Books blocks default requests).
-/// Uses shared cache and limits concurrency to avoid 429 rate limiting.
-/// Retries on failure (with delay) and on reappear so we don't give up after one miss.
+/// Loads covers with shared disk/memory caching and cancels offscreen requests.
 struct BookCoverImage: View {
     let urlString: String
     let width: CGFloat
     let height: CGFloat
-    @State private var image: UIImage?
-    @State private var loadFailed = false
-    @State private var retryAttempt = 0
 
-    private var placeholder: some View {
-        Rectangle()
-            .fill(Color.velvet.opacity(0.3))
-            .overlay {
-                Image(systemName: "book.closed")
-                    .foregroundColor(.ghost)
-            }
+    private static let pipeline = ImagePipeline(
+        configuration: .withDataCache(
+            name: "kiki.textual.covers",
+            sizeLimit: 100 * 1024 * 1024
+        )
+    )
+
+    private var request: Nuke.ImageRequest? {
+        guard !urlString.isEmpty, let url = URL(string: urlString) else {
+            return nil
+        }
+        var request = URLRequest(url: url)
+        request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1", forHTTPHeaderField: "User-Agent")
+        return Nuke.ImageRequest(
+            urlRequest: request,
+            userInfo: [
+                .thumbnailKey: Nuke.ImageRequest.ThumbnailOptions(
+                    size: CGSize(width: width, height: height),
+                    unit: .points,
+                    contentMode: .aspectFill
+                )
+            ]
+        )
     }
 
     var body: some View {
-        Group {
-            if let image {
-                Image(uiImage: image)
+        LazyImage(request: request) { state in
+            if let image = state.image {
+                image
                     .resizable()
                     .aspectRatio(contentMode: .fill)
-            } else if loadFailed {
-                placeholder
             } else {
                 Rectangle()
                     .fill(Color.velvet.opacity(0.3))
-                    .overlay { ProgressView().tint(.paper) }
+                    .overlay {
+                        if state.isLoading {
+                            ProgressView().tint(.paper)
+                        } else {
+                            Image(systemName: "book.closed")
+                                .foregroundColor(.ghost)
+                        }
+                    }
             }
         }
+        .pipeline(Self.pipeline)
+        .id("\(width)x\(height)")
         .frame(width: width, height: height)
         .cornerRadius(8)
         .clipped()
         .shadow(color: .inkwell.opacity(0.1), radius: 4, x: 0, y: 2)
-        .task(id: "\(urlString)-\(retryAttempt)") {
-            guard !urlString.isEmpty else { return }
-            var loaded = await BookCoverImageLoader.shared.load(urlString: urlString)
-            if loaded == nil, !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
-                loaded = await BookCoverImageLoader.shared.load(urlString: urlString)
-            }
-            if loaded == nil, !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
-                loaded = await BookCoverImageLoader.shared.load(urlString: urlString)
-            }
-            if !Task.isCancelled {
-                if let loaded {
-                    image = loaded
-                    loadFailed = false
-                } else {
-                    loadFailed = true
-                }
-            }
-        }
-        .onAppear {
-            if loadFailed {
-                loadFailed = false
-                retryAttempt += 1
-            }
-        }
     }
 }
 

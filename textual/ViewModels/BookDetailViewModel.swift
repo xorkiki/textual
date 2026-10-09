@@ -7,106 +7,189 @@
 
 import Foundation
 import Combine
+import SwiftData
 
 @MainActor
 final class BookDetailViewModel: ObservableObject {
-    @Published var volume: GoogleBooksService.BookItem?
+    @Published var volume: BookCatalogService.BookItem?
     @Published var isLoading = false
     @Published var errorMessage: String?
 
-    private let booksService = GoogleBooksService()
+    private let booksService: BookCatalogService
 
-    func fetchVolume(book: Book) async {
+    init(booksService: BookCatalogService = .shared) {
+        self.booksService = booksService
+    }
+
+    func fetchVolume(book: Book, forceRefresh: Bool = false) async {
         if isLoading { return }
-        isLoading = true
         errorMessage = nil
-        volume = nil
+        let cached = cachedVolume(book: book)
+        volume = mergedVolume(cached, book: book)
+        if !forceRefresh, cached != nil,
+           let updatedAt = book.catalogMetadataUpdatedAt,
+           (0.0..<TimeInterval(24 * 60 * 60)).contains(Date().timeIntervalSince(updatedAt)) {
+            return
+        }
 
-        var volumeIdToUse = book.googleBooksVolumeId
+        isLoading = true
+        defer { isLoading = false }
+
+        var volumeIdToUse = nonempty(cached?.id) ?? nonempty(book.googleBooksVolumeId)
+        if volumeIdToUse?.hasPrefix("storygraph:") == true { volumeIdToUse = nil }
+        let isbn = normalizedISBN(book.isbn)
+        var resolvedByISBN = false
 
         // If we don't have an ID, resolve: use isbn as volume ID if it looks like one, else search by ISBN
-        if volumeIdToUse == nil || volumeIdToUse?.isEmpty == true, !book.isbn.isEmpty {
-            let digitsOnly = book.isbn.replacingOccurrences(of: "-", with: "").filter { $0.isNumber }
-            let looksLikeIsbn = digitsOnly.count == 10 || digitsOnly.count == 13
-            if looksLikeIsbn {
+        if volumeIdToUse == nil, !book.isbn.isEmpty {
+            if let isbn {
                 do {
-                    volumeIdToUse = try await booksService.searchBookId(isbn: book.isbn)
+                    resolvedByISBN = true
+                    volumeIdToUse = try await booksService.searchBookId(isbn: isbn)
                 } catch {
-                    print("Failed to resolve ISBN to ID: \(error)")
+                    guard !Task.isCancelled else { return }
+                    errorMessage = "Additional details couldn't be loaded. Your saved book is still available."
+                    return
                 }
-            } else {
-                volumeIdToUse = book.isbn
+            } else if book.googleBooksVolumeId?.hasPrefix("storygraph:") != true {
+                volumeIdToUse = nonempty(book.isbn)
             }
         }
 
         guard let id = volumeIdToUse, !id.isEmpty else {
-            errorMessage = "Could not find book details."
-            isLoading = false
+            errorMessage = "No additional details are available for this book."
             return
         }
 
         do {
-            let result = try await booksService.fetchVolume(id: id)
-            volume = result
-            isLoading = false
+            let result = try await booksService.fetchVolume(id: id, forceRefresh: forceRefresh)
+            guard !Task.isCancelled else { return }
+            storeVolume(result, book: book)
         } catch {
+            guard !Task.isCancelled else { return }
             // Fallback: if volume ID failed (e.g. 404 after Google merged editions), try resolving by ISBN
-            let digitsOnly = book.isbn.replacingOccurrences(of: "-", with: "").filter { $0.isNumber }
-            let hasValidIsbn = digitsOnly.count == 10 || digitsOnly.count == 13
-            if hasValidIsbn, let resolvedId = try? await booksService.searchBookId(isbn: book.isbn), !resolvedId.isEmpty {
+            if !resolvedByISBN, let isbn,
+               let resolvedId = try? await booksService.searchBookId(isbn: isbn),
+               !resolvedId.isEmpty, resolvedId != id {
                 do {
-                    let result = try await booksService.fetchVolume(id: resolvedId)
-                    volume = result
-                    errorMessage = nil
+                    let result = try await booksService.fetchVolume(id: resolvedId, forceRefresh: forceRefresh)
+                    guard !Task.isCancelled else { return }
+                    storeVolume(result, book: book)
+                    return
                 } catch {
-                    errorMessage = "Failed to load book details"
-                    volume = nil
+                    // Keep the saved title, author, and cover below the nonblocking error.
                 }
-            } else {
-                errorMessage = "Failed to load book details"
-                volume = nil
             }
-            isLoading = false
+            guard !Task.isCancelled else { return }
+            errorMessage = "Additional details couldn't be loaded. Your saved book is still available."
         }
+    }
+
+    func savedVolume(book: Book) -> BookCatalogService.BookItem {
+        mergedVolume(cachedVolume(book: book), book: book)
+    }
+
+    private func cachedVolume(book: Book) -> BookCatalogService.BookItem? {
+        guard let data = book.cachedCatalogMetadata,
+              let cached = try? JSONDecoder().decode(BookCatalogService.BookItem.self, from: data),
+              cached.volumeInfo != nil else {
+            return nil
+        }
+        return cached
+    }
+
+    private func storeVolume(_ result: BookCatalogService.BookItem, book: Book) {
+        let merged = mergedVolume(result, book: book)
+        volume = merged
+        do {
+            book.cachedCatalogMetadata = try JSONEncoder().encode(merged)
+            book.catalogMetadataUpdatedAt = Date()
+            try book.modelContext?.save()
+        } catch {
+            errorMessage = "Details loaded, but couldn't be saved for offline reading."
+        }
+    }
+
+    private func mergedVolume(_ fetched: BookCatalogService.BookItem?, book: Book) -> BookCatalogService.BookItem {
+        let info = fetched?.volumeInfo
+        let fetchedAuthors = info?.authors?.compactMap { nonempty($0) } ?? []
+        let savedAuthors = nonempty(book.author).map { [$0] } ?? []
+        let cover = nonempty(book.coverURL)
+            ?? nonempty(info?.imageLinks?.thumbnail)
+            ?? nonempty(info?.imageLinks?.smallThumbnail)
+
+        return BookCatalogService.BookItem(
+            id: fetched?.id ?? book.googleBooksVolumeId,
+            volumeInfo: BookCatalogService.VolumeInfo(
+                title: nonempty(book.title) ?? nonempty(info?.title),
+                subtitle: info?.subtitle,
+                authors: savedAuthors.isEmpty ? fetchedAuthors : savedAuthors,
+                description: info?.description,
+                industryIdentifiers: info?.industryIdentifiers,
+                imageLinks: cover.map { .init(thumbnail: $0, smallThumbnail: nil) },
+                averageRating: info?.averageRating,
+                ratingsCount: info?.ratingsCount,
+                categories: info?.categories
+            )
+        )
+    }
+
+    private func nonempty(_ value: String?) -> String? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
+            return nil
+        }
+        return value
+    }
+
+    private func normalizedISBN(_ value: String) -> String? {
+        let isbn = value.filter { $0 != "-" && !$0.isWhitespace }.uppercased()
+        let digits = "0123456789"
+        if isbn.count == 13, isbn.allSatisfy({ digits.contains($0) }) { return isbn }
+        if isbn.count == 10,
+           isbn.dropLast().allSatisfy({ digits.contains($0) }),
+           let last = isbn.last, digits.contains(last) || last == "X" {
+            return isbn
+        }
+        return nil
     }
     
     // MARK: - Data Extractors (matches AddBookViewModel patterns)
     
-    func title(from item: GoogleBooksService.BookItem) -> String {
+    func title(from item: BookCatalogService.BookItem) -> String {
         item.volumeInfo?.title ?? "No Title"
     }
     
-    func subtitle(from item: GoogleBooksService.BookItem) -> String? {
+    func subtitle(from item: BookCatalogService.BookItem) -> String? {
         guard let sub = item.volumeInfo?.subtitle, !sub.isEmpty else { return nil }
         return sub
     }
     
-    func authors(from item: GoogleBooksService.BookItem) -> String {
+    func authors(from item: BookCatalogService.BookItem) -> String {
         guard let authors = item.volumeInfo?.authors, !authors.isEmpty else {
             return "Unknown Author"
         }
         return authors.joined(separator: ", ")
     }
     
-    func description(from item: GoogleBooksService.BookItem) -> String? {
+    func description(from item: BookCatalogService.BookItem) -> String? {
         guard let desc = item.volumeInfo?.description, !desc.isEmpty else { return nil }
         return desc
     }
     
-    func coverURL(from item: GoogleBooksService.BookItem) -> String {
+    func coverURL(from item: BookCatalogService.BookItem) -> String {
         let urlString = item.volumeInfo?.imageLinks?.thumbnail ?? item.volumeInfo?.imageLinks?.smallThumbnail
-        return GoogleBooksService.secureImageURL(urlString)
+        return BookCatalogService.secureImageURL(urlString)
     }
     
-    func averageRating(from item: GoogleBooksService.BookItem) -> Double? {
+    func averageRating(from item: BookCatalogService.BookItem) -> Double? {
         item.volumeInfo?.averageRating
     }
     
-    func ratingsCount(from item: GoogleBooksService.BookItem) -> Int? {
+    func ratingsCount(from item: BookCatalogService.BookItem) -> Int? {
         item.volumeInfo?.ratingsCount
     }
     
-    func categories(from item: GoogleBooksService.BookItem) -> [String] {
+    func categories(from item: BookCatalogService.BookItem) -> [String] {
         item.volumeInfo?.categories ?? []
     }
 }

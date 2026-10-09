@@ -6,6 +6,12 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		27B914422F285FC500E64769 /* Nuke in Frameworks */ = {isa = PBXBuildFile; productRef = 27B914442F285FC500E64769 /* Nuke */; };
+		27B914432F285FC500E64769 /* NukeUI in Frameworks */ = {isa = PBXBuildFile; productRef = 27B914452F285FC500E64769 /* NukeUI */; };
+		AB7A21582FD012B900AA1234 /* Supabase in Frameworks */ = {isa = PBXBuildFile; productRef = AB7A21572FD012B900AA1234 /* Supabase */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		2731E5542F28521800731EB4 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -125,6 +131,9 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				AB7A21582FD012B900AA1234 /* Supabase in Frameworks */,
+				27B914422F285FC500E64769 /* Nuke in Frameworks */,
+				27B914432F285FC500E64769 /* NukeUI in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -185,6 +194,9 @@
 			);
 			name = textual;
 			packageProductDependencies = (
+				AB7A21572FD012B900AA1234 /* Supabase */,
+				27B914442F285FC500E64769 /* Nuke */,
+				27B914452F285FC500E64769 /* NukeUI */,
 			);
 			productName = textual;
 			productReference = 2731E5412F28521700731EB4 /* textual.app */;
@@ -654,6 +666,24 @@
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		27B914442F285FC500E64769 /* Nuke */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 27B914412F285FC500E64769 /* XCRemoteSwiftPackageReference "Nuke" */;
+			productName = Nuke;
+		};
+		27B914452F285FC500E64769 /* NukeUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 27B914412F285FC500E64769 /* XCRemoteSwiftPackageReference "Nuke" */;
+			productName = NukeUI;
+		};
+		AB7A21572FD012B900AA1234 /* Supabase */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 27B914402F285FA500E64769 /* XCRemoteSwiftPackageReference "supabase-swift" */;
+			productName = Supabase;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 2731E5392F28521700731EB4 /* Project object */;
 }

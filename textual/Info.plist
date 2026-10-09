@@ -2,43 +2,36 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>kiki.textual.auth</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>textual</string>
+			</array>
+		</dict>
+	</array>
+	<key>GOOGLE_BOOKS_API_KEY</key>
+	<string>$(GOOGLE_BOOKS_API_KEY)</string>
 	<key>SUPABASE_ANON_KEY</key>
 	<string>$(SUPABASE_ANON_KEY)</string>
 	<key>SUPABASE_URL</key>
 	<string>$(SUPABASE_URL)</string>
-	<!-- 
-		Font files are located at: textual/Resources/Fonts/
-		Paths are relative to the app bundle root.
-		Font names in code should match the PostScript name or full name from the font file.
-	-->
 	<key>UIAppFonts</key>
 	<array>
-		<string>LamarPen Regular.ttf</string>
-		<string>CormorantGaramond-Regular.ttf</string>
 		<string>CormorantGaramond-Bold.ttf</string>
 		<string>CormorantGaramond-Light.ttf</string>
 		<string>CormorantGaramond-Medium.ttf</string>
+		<string>CormorantGaramond-Regular.ttf</string>
 		<string>CormorantGaramond-SemiBold.ttf</string>
-		<string>CormorantGaramond-Italic.ttf</string>
-		<string>CormorantGaramond-BoldItalic.ttf</string>
-		<string>CormorantGaramond-LightItalic.ttf</string>
-		<string>CormorantGaramond-MediumItalic.ttf</string>
-		<string>CormorantGaramond-SemiBoldItalic.ttf</string>
-		<string>PlusJakartaSans-Regular.ttf</string>
-		<string>PlusJakartaSans-Bold.ttf</string>
 		<string>PlusJakartaSans-Medium.ttf</string>
-		<string>PlusJakartaSans-SemiBold.ttf</string>
-		<string>PlusJakartaSans-Light.ttf</string>
-		<string>PlusJakartaSans-ExtraLight.ttf</string>
-		<string>PlusJakartaSans-ExtraBold.ttf</string>
-		<string>PlusJakartaSans-Italic.ttf</string>
-		<string>PlusJakartaSans-BoldItalic.ttf</string>
-		<string>PlusJakartaSans-MediumItalic.ttf</string>
-		<string>PlusJakartaSans-SemiBoldItalic.ttf</string>
-		<string>PlusJakartaSans-LightItalic.ttf</string>
-		<string>PlusJakartaSans-ExtraLightItalic.ttf</string>
-		<string>PlusJakartaSans-ExtraBoldItalic.ttf</string>
-		<string>SpecialElite-Regular.ttf</string>
+		<string>PlusJakartaSans-Regular.ttf</string>
 	</array>
 </dict>
 </plist>

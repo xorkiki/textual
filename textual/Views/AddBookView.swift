@@ -9,123 +9,22 @@ import SwiftUI
 import SwiftData
 
 struct AddBookView: View {
+    var repository: LibraryRepository? = nil
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
     @FocusState private var isSearchFocused: Bool
     @State private var viewModel = AddBookViewModel()
-    
-    // Dummy UUID for testing before Auth flow
-    private let dummyUserId = UUID()
+
+    @State private var saveAlertTitle = "Couldn’t add book"
+    @State private var saveErrorMessage: String?
     
     var body: some View {
         NavigationStack {
             ZStack {
-                // Background
-                Color.inkwell
-                    .ignoresSafeArea()
-                
+                Color.inkwell.ignoresSafeArea()
                 VStack(spacing: 0) {
-                    // Search Bar
-                    HStack {
-                        Image(systemName: "magnifyingglass")
-                            .foregroundColor(.ghost)
-                        
-                        TextField("Search by title or author", text: $viewModel.searchText)
-                            .textStyle(.bodyMedium)
-                            .foregroundColor(.paper)
-                            .textFieldStyle(.plain)
-                            .focused($isSearchFocused)
-                            .onChange(of: viewModel.searchText) { oldValue, newValue in
-                                // Debounce search - search after user stops typing
-                                Task {
-                                    try? await Task.sleep(nanoseconds: 500_000_000) // 0.5 second delay
-                                    if viewModel.searchText == newValue {
-                                        await viewModel.performSearch()
-                                    }
-                                }
-                            }
-                            .onSubmit {
-                                Task {
-                                    await viewModel.performSearch()
-                                }
-                            }
-                            .autocapitalization(.none)
-                            .autocorrectionDisabled()
-                        
-                        if !viewModel.searchText.isEmpty {
-                            Button(action: {
-                                viewModel.searchText = ""
-                                viewModel.searchResults = []
-                            }) {
-                                Image(systemName: "xmark.circle.fill")
-                                    .foregroundColor(.ghost)
-                            }
-                        }
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 12)
-                    .background(Color.velvet.opacity(0.3))
-                    .cornerRadius(10)
-                    .padding(.horizontal)
-                    .padding(.top, 8)
-                    
-                    // Results List
-                    if viewModel.isSearching {
-                        Spacer()
-                        ProgressView()
-                            .tint(.paper)
-                            .padding()
-                        Spacer()
-                    } else if let error = viewModel.errorMessage {
-                        Spacer()
-                        Text(error)
-                            .textStyle(.bodyMedium)
-                            .foregroundColor(.ghost)
-                            .padding()
-                        Spacer()
-                    } else if viewModel.searchResults.isEmpty && !viewModel.searchText.isEmpty {
-                        Spacer()
-                        VStack(spacing: 8) {
-                            Image(systemName: "book.closed")
-                                .font(.system(size: 48))
-                                .foregroundColor(.ghost)
-                            Text("No results found")
-                                .textStyle(.heading3)
-                                .foregroundColor(.paper)
-                        }
-                        .padding()
-                        Spacer()
-                    } else if viewModel.searchResults.isEmpty {
-                        Spacer()
-                        VStack(spacing: 8) {
-                            Image(systemName: "magnifyingglass")
-                                .font(.system(size: 48))
-                                .foregroundColor(.ghost)
-                            Text("Search for books")
-                                .textStyle(.heading3)
-                                .foregroundColor(.paper)
-                            Text("Enter a title or author name")
-                                .textStyle(.bodyMedium)
-                                .foregroundColor(.ghost)
-                        }
-                        .padding()
-                        Spacer()
-                    } else {
-                        ScrollView {
-                            LazyVStack(spacing: 16) {
-                                ForEach(viewModel.searchResults, id: \.id) { item in
-                                    BookSearchResultRow(
-                                        item: item,
-                                        viewModel: viewModel,
-                                        onTap: {
-                                            saveBook(from: item)
-                                        }
-                                    )
-                                }
-                            }
-                            .padding()
-                        }
-                    }
+                    searchBar
+                    searchContent
                 }
             }
             .navigationBarTitleDisplayMode(.large)
@@ -138,56 +37,234 @@ struct AddBookView: View {
                         .foregroundColor(.paper)
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Done") {
-                        dismiss()
-                    }
-                    .textStyle(.uiButton)
-                    .foregroundColor(.paper)
+                    Button("Done") { dismiss() }
+                        .textStyle(.uiButton)
+                        .foregroundColor(.paper)
                 }
             }
-            .onAppear {
-                // Focus search field when sheet appears so keyboard shows reliably
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            .task {
+                // Wait until the sheet is presented before opening the keyboard.
+                do {
+                    try await Task.sleep(for: .milliseconds(400))
                     isSearchFocused = true
-                }
+                } catch { }
+            }
+            .onDisappear { viewModel.cancelSearch() }
+            .alert(saveAlertTitle, isPresented: Binding(
+                get: { saveErrorMessage != nil },
+                set: { if !$0 { saveErrorMessage = nil } }
+            )) {
+                Button("OK", role: .cancel) { saveErrorMessage = nil }
+            } message: {
+                Text(saveErrorMessage ?? "")
             }
         }
     }
-    
-    private func saveBook(from item: GoogleBooksService.BookItem) {
+
+    private var searchBar: some View {
+        HStack {
+            Image(systemName: "magnifyingglass")
+                .foregroundColor(.ghost)
+            TextField(viewModel.searchPlaceholder, text: $viewModel.searchText)
+                .textStyle(.bodyMedium)
+                .foregroundColor(.paper)
+                .textFieldStyle(.plain)
+                .focused($isSearchFocused)
+                .onChange(of: viewModel.searchText) { _, _ in
+                    viewModel.searchTextDidChange()
+                }
+                .onSubmit { viewModel.submitSearch() }
+                .submitLabel(.search)
+                .autocapitalization(.none)
+                .autocorrectionDisabled()
+
+            if !viewModel.searchText.isEmpty {
+                Button(action: viewModel.clearSearch) {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundColor(.ghost)
+                }
+                .accessibilityLabel("Clear search")
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(Color.velvet.opacity(0.3), in: Capsule())
+        .padding(.horizontal)
+        .padding(.top, 8)
+        .padding(.bottom, 12)
+    }
+
+    @ViewBuilder
+    private var searchContent: some View {
+        if !viewModel.searchResults.isEmpty {
+            resultsList
+        } else if viewModel.isSearching {
+            Spacer()
+            ProgressView("Searching books…")
+                .tint(.paper)
+                .foregroundStyle(Color.ghost)
+                .padding()
+            Spacer()
+        } else if let error = viewModel.errorMessage {
+            Spacer()
+            VStack(spacing: 16) {
+                Image(systemName: "exclamationmark.circle")
+                    .font(.system(size: 40))
+                    .foregroundColor(.ghost)
+                Text("Search unavailable")
+                    .textStyle(.heading3)
+                    .foregroundColor(.paper)
+                Text(error)
+                    .textStyle(.bodyMedium)
+                    .foregroundColor(.ghost)
+                    .multilineTextAlignment(.center)
+                Button("Try again") { viewModel.submitSearch() }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.bloodletter)
+            }
+            .padding()
+            Spacer()
+        } else {
+            Spacer()
+            VStack(spacing: 8) {
+                Image(systemName: viewModel.hasSearched ? "book.closed" : "magnifyingglass")
+                    .font(.system(size: 48))
+                    .foregroundColor(.ghost)
+                Text(viewModel.hasSearched ? "No results found" : "Search for books")
+                    .textStyle(.heading3)
+                    .foregroundColor(.paper)
+                Text(searchHint)
+                    .textStyle(.bodyMedium)
+                    .foregroundColor(.ghost)
+                    .multilineTextAlignment(.center)
+            }
+            .padding()
+            Spacer()
+        }
+    }
+
+    private var searchHint: String {
+        if viewModel.isQueryTooShort {
+            return "Enter at least \(BookCatalogService.minimumSearchQueryLength) characters to search by title or author."
+        }
+        return viewModel.hasSearched ? "Try another title or author name" : "Enter a title or author name"
+    }
+
+    private var resultsList: some View {
+        VStack(spacing: 0) {
+            if viewModel.isSearching {
+                HStack(spacing: 8) {
+                    ProgressView().tint(.paper)
+                    Text("Updating results…")
+                        .textStyle(.bodySmall)
+                        .foregroundColor(.ghost)
+                    Spacer()
+                }
+                .padding(.horizontal)
+                .padding(.bottom, 8)
+            }
+            ScrollView {
+                LazyVStack(spacing: 16) {
+                    ForEach(viewModel.searchResults, id: \.id) { item in
+                        BookSearchResultRow(item: item, viewModel: viewModel) {
+                            saveBook(from: item)
+                        }
+                        .disabled(viewModel.isSearching)
+                        .opacity(viewModel.isSearching ? 0.6 : 1)
+                    }
+                    paginationFooter
+                }
+                .padding()
+            }
+            .scrollIndicators(.hidden)
+            .scrollDismissesKeyboard(.interactively)
+        }
+    }
+
+    @ViewBuilder
+    private var paginationFooter: some View {
+        if viewModel.isLoadingMore {
+            ProgressView("Loading more books…")
+                .tint(.paper)
+                .foregroundStyle(Color.ghost)
+                .padding()
+        } else if let error = viewModel.paginationErrorMessage {
+            VStack(spacing: 12) {
+                Text(error)
+                    .textStyle(.bodySmall)
+                    .foregroundColor(.ghost)
+                    .multilineTextAlignment(.center)
+                Button("Try loading more") { viewModel.loadMore() }
+                    .buttonStyle(.bordered)
+                    .tint(.paper)
+            }
+            .padding(.vertical)
+        } else if viewModel.canLoadMore {
+            Button("Load more") { viewModel.loadMore() }
+                .buttonStyle(.bordered)
+                .tint(.paper)
+                .padding(.vertical)
+        }
+    }
+
+    private func saveBook(from item: BookCatalogService.BookItem) {
         let title = viewModel.extractTitle(from: item)
-        let isbn = viewModel.extractISBN(from: item)
+        let extractedISBN = viewModel.extractISBN(from: item)
+        let isbn = extractedISBN.isEmpty ? (item.id ?? UUID().uuidString) : extractedISBN
         let coverURL = viewModel.extractCoverURL(from: item)
         let author = viewModel.extractAuthor(from: item)
-        
+        let providerID = item.id
+
+        do {
+            var duplicates = FetchDescriptor<Book>(predicate: #Predicate<Book> { book in
+                !book.isRemovedFromLibrary && (book.isbn == isbn || (providerID != nil && book.googleBooksVolumeId == providerID))
+            })
+            duplicates.fetchLimit = 1
+            guard try modelContext.fetch(duplicates).isEmpty else {
+                saveAlertTitle = "Already in your library"
+                saveErrorMessage = "This book has already been added. You can find it in My Library."
+                return
+            }
+        } catch {
+            saveAlertTitle = "Couldn’t add book"
+            saveErrorMessage = "Your library couldn’t be checked. Please try again."
+            return
+        }
+
         let book = Book(
             title: title,
             author: author,
-            isbn: isbn.isEmpty ? (item.id ?? UUID().uuidString) : isbn,
+            isbn: isbn,
             coverURL: coverURL,
-            googleBooksVolumeId: item.id
+            googleBooksVolumeId: providerID
         )
-        
-        modelContext.insert(book)
-        
         do {
-            try modelContext.save()
+            if let repository {
+                try repository.add(book)
+                Task { await repository.synchronize() }
+            } else {
+                modelContext.insert(book)
+                try modelContext.save()
+            }
             dismiss()
         } catch {
-            print("Failed to save book: \(error.localizedDescription)")
+            modelContext.rollback()
+            saveAlertTitle = "Couldn’t add book"
+            saveErrorMessage = "The book couldn’t be saved to your library. Please try again."
         }
     }
+
 }
 
 struct BookSearchResultRow: View {
-    let item: GoogleBooksService.BookItem
+    let item: BookCatalogService.BookItem
     let viewModel: AddBookViewModel
     let onTap: () -> Void
     
     var body: some View {
         Button(action: onTap) {
             HStack(spacing: 16) {
-                // Cover Image (URLSession with User-Agent so Google Books accepts the request)
+                // Cover image
                 let coverURLString = viewModel.extractCoverURL(from: item)
                 if !coverURLString.isEmpty {
                     BookCoverImage(urlString: coverURLString, width: 60, height: 90)
