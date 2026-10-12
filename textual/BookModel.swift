@@ -15,12 +15,23 @@ final class Book {
     var author: String
     var isbn: String
     var coverURL: String
+    /// Successfully loaded fallback cover, kept locally across catalog syncs.
+    var resolvedCoverURL: String? = nil
     /// Catalog ID: a Google volume ID or a namespaced openlibrary: work ID.
     /// Keep this stored property name for compatibility with existing libraries.
     var googleBooksVolumeId: String?
     /// Optional local metadata cache; additive fields preserve existing SwiftData stores.
     var cachedCatalogMetadata: Data? = nil
     var catalogMetadataUpdatedAt: Date? = nil
+    /// Persists unsuccessful lookups too, so visiting Stats never retries every missing book.
+    var statsMetadataCheckedAt: Date? = nil
+    var statsMetadataVersion: Int = 0
+    /// Classification evidence is separate from edition metadata, so a title match
+    /// can improve classification without replacing page counts or the saved edition.
+    var cachedStatsClassification: Data? = nil
+    var statsClassificationCheckedAt: Date? = nil
+    var statsClassificationUsedGoogleKey: Bool = false
+    var statsClassificationVersion: Int = 0
     /// Private import provenance and reading history. Lives in this account's store.
     var storyGraphData: Data? = nil
 

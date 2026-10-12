@@ -48,6 +48,7 @@ final class BookDetailViewModel: ObservableObject {
                     volumeIdToUse = try await booksService.searchBookId(isbn: isbn)
                 } catch {
                     guard !Task.isCancelled else { return }
+                    if await resolveByTitle(book: book, forceRefresh: forceRefresh) { return }
                     errorMessage = "Additional details couldn't be loaded. Your saved book is still available."
                     return
                 }
@@ -57,7 +58,9 @@ final class BookDetailViewModel: ObservableObject {
         }
 
         guard let id = volumeIdToUse, !id.isEmpty else {
-            errorMessage = "No additional details are available for this book."
+            if await resolveByTitle(book: book, forceRefresh: forceRefresh) { return }
+            guard !Task.isCancelled else { return }
+            if errorMessage == nil { errorMessage = "No additional details are available for this book." }
             return
         }
 
@@ -81,7 +84,23 @@ final class BookDetailViewModel: ObservableObject {
                 }
             }
             guard !Task.isCancelled else { return }
+            if await resolveByTitle(book: book, forceRefresh: forceRefresh) { return }
             errorMessage = "Additional details couldn't be loaded. Your saved book is still available."
+        }
+    }
+
+    private func resolveByTitle(book: Book, forceRefresh: Bool) async -> Bool {
+        do {
+            guard let result = try await booksService.matchedBook(title: book.title, author: book.author,
+                                                                 forceRefresh: forceRefresh) else { return false }
+            guard !Task.isCancelled else { return false }
+            storeVolume(result, book: book)
+            return true
+        } catch {
+            if !Task.isCancelled {
+                errorMessage = "Additional details couldn't be loaded. Your saved book is still available."
+            }
+            return false
         }
     }
 
@@ -114,7 +133,8 @@ final class BookDetailViewModel: ObservableObject {
         let info = fetched?.volumeInfo
         let fetchedAuthors = info?.authors?.compactMap { nonempty($0) } ?? []
         let savedAuthors = nonempty(book.author).map { [$0] } ?? []
-        let cover = nonempty(book.coverURL)
+        let cover = nonempty(book.resolvedCoverURL)
+            ?? nonempty(book.coverURL)
             ?? nonempty(info?.imageLinks?.thumbnail)
             ?? nonempty(info?.imageLinks?.smallThumbnail)
 
@@ -129,7 +149,8 @@ final class BookDetailViewModel: ObservableObject {
                 imageLinks: cover.map { .init(thumbnail: $0, smallThumbnail: nil) },
                 averageRating: info?.averageRating,
                 ratingsCount: info?.ratingsCount,
-                categories: info?.categories
+                categories: info?.categories?.isEmpty == false ? info?.categories : cachedVolume(book: book)?.volumeInfo?.categories,
+                pageCount: info?.pageCount ?? cachedVolume(book: book)?.volumeInfo?.pageCount
             )
         )
     }
@@ -172,8 +193,7 @@ final class BookDetailViewModel: ObservableObject {
     }
     
     func description(from item: BookCatalogService.BookItem) -> String? {
-        guard let desc = item.volumeInfo?.description, !desc.isEmpty else { return nil }
-        return desc
+        BookDetailPresentation.description(item.volumeInfo?.description)
     }
     
     func coverURL(from item: BookCatalogService.BookItem) -> String {
@@ -190,6 +210,8 @@ final class BookDetailViewModel: ObservableObject {
     }
     
     func categories(from item: BookCatalogService.BookItem) -> [String] {
-        item.volumeInfo?.categories ?? []
+        BookDetailPresentation.categories(item.volumeInfo?.categories ?? [],
+                                          title: item.volumeInfo?.title,
+                                          description: item.volumeInfo?.description)
     }
 }

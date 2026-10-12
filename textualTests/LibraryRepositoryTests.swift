@@ -202,6 +202,22 @@ struct LibraryRepositoryTests {
         #expect(saved.pendingOperationData == payload)
     }
 
+    @Test func queueOrderIsIncludedInDurableSyncPayloads() async throws {
+        let container = try makeContainer()
+        let user = UUID()
+        let transport = MockLibraryTransport(userID: user)
+        let repository = LibraryRepository(userID: user, modelContext: container.mainContext, transport: transport)
+        let book = makeBook()
+        try repository.add(book)
+        try UpNextQueue.save([book], context: container.mainContext, repository: repository)
+        let payload = try JSONDecoder().decode(LibraryChange.self, from: #require(book.pendingOperationData))
+        #expect(payload.readingData?.upNextPosition == 0)
+        #expect(payload.readingData?.upNextExcluded == false)
+        await repository.synchronize()
+        #expect(book.pendingOperationID == nil)
+        #expect(book.importedReading?.upNextPosition == 0)
+    }
+
     private func makeContainer() throws -> ModelContainer {
         let schema = Schema([Book.self, Tag.self, LibrarySyncState.self])
         return try ModelContainer(for: schema, configurations: ModelConfiguration(schema: schema, isStoredInMemoryOnly: true))
@@ -262,7 +278,7 @@ private actor MockLibraryTransport: LibrarySyncTransport {
                 author: source.author, isbn: source.isbn, coverURL: source.coverURL)
             let entry = RemoteLibraryEntry(id: change.entryID, bookID: snapshot.id!, revision: revision,
                 updatedAt: "2026-10-08T12:00:00Z", deletedAt: change.deleted && !conflict ? "2026-10-08T12:00:00Z" : nil,
-                book: snapshot)
+                book: snapshot, readingData: change.readingData)
             results.append(.init(operationID: change.operationID, status: conflict ? .conflict : .applied, entry: entry))
             entries.append(entry)
         }

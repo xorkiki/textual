@@ -227,17 +227,26 @@ final class LibraryRepository {
 
     /// Mutations and their exact retry payload are committed together locally.
     func save(_ book: Book) throws {
+        try save([book])
+    }
+
+    /// Save a queue reorder and all of its retry payloads in one local transaction.
+    func save(_ books: [Book]) throws {
         try requireActive()
-        guard book.modelContext === modelContext else { throw LibraryRepositoryError.wrongContext }
+        guard books.allSatisfy({ $0.modelContext === modelContext }) else {
+            throw LibraryRepositoryError.wrongContext
+        }
         do {
-            book.pendingOperationID = UUID()
-            book.pendingOperationData = try JSONEncoder().encode(change(for: book))
+            for book in books {
+                book.pendingOperationID = UUID()
+                book.pendingOperationData = try JSONEncoder().encode(change(for: book))
+            }
             try modelContext.save()
         } catch {
-            rollbackPendingChanges(restoring: book)
+            rollbackPendingChanges()
             throw error
         }
-        if book.syncConflictData == nil {
+        if books.allSatisfy({ $0.syncConflictData == nil }) {
             syncState = .queued
             message = "Changes are saved on this iPhone and waiting to sync."
         } else {
@@ -271,7 +280,7 @@ final class LibraryRepository {
         do {
             _ = try syncCheckpoint() // Reject a mismatched account store before any writes.
             for (record, existing) in plan.matches {
-                if let existing, !existing.isRemovedFromLibrary, existing.importedReading == record.reading { continue }
+                if let existing, !existing.isRemovedFromLibrary, existing.importedReading == record.reading.preservingQueue(from: existing.importedReading) { continue }
                 let book: Book
                 if let existing { book = existing }
                 else {
@@ -280,7 +289,8 @@ final class LibraryRepository {
                                 googleBooksVolumeId: record.catalogID)
                     modelContext.insert(book)
                 }
-                book.storyGraphData = try JSONEncoder().encode(record.reading)
+                let reading = record.reading.preservingQueue(from: book.importedReading)
+                book.storyGraphData = try JSONEncoder().encode(reading)
                 book.isRemovedFromLibrary = false
                 book.pendingOperationID = UUID()
                 book.pendingOperationData = try JSONEncoder().encode(change(for: book))
@@ -333,7 +343,7 @@ final class LibraryRepository {
                 guard existing.syncConflictData == nil else {
                     throw StoryGraphImportError.invalid("Resolve the sync conflict for “\(existing.title)” before importing.")
                 }
-                if !existing.isRemovedFromLibrary, existing.importedReading == record.reading { summary.unchanged += 1 }
+                if !existing.isRemovedFromLibrary, existing.importedReading == record.reading.preservingQueue(from: existing.importedReading) { summary.unchanged += 1 }
                 else { summary.updated += 1 }
             } else { summary.added += 1 }
             matches.append((record, existing))

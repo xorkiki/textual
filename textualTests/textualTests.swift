@@ -539,6 +539,60 @@ struct textualTests {
         #expect(BookServiceURLProtocol.state.requests.allSatisfy { $0.url?.host == "www.googleapis.com" })
     }
 
+    @Test func classificationQueriesGoogleEvenWithExistingFallbackSubjects() async throws {
+        let (service, session) = makeService(apiKey: nil) { _ in
+            StubResponse(status: 200, json: #"{"items":[{"id":"verified","volumeInfo":{"title":"Matilda","authors":["Roald Dahl"],"categories":["Juvenile Fiction"],"industryIdentifiers":[{"type":"ISBN_13","identifier":"9780140328721"}]}}]}"#)
+        }
+        defer { session.invalidateAndCancel() }
+        let evidence = try await service.classification(isbn: "9780140328721", title: "Matilda", author: "Roald Dahl", savedCategories: ["Children"], savedSource: "openlibrary")
+        #expect(evidence?.source == "google")
+        #expect(BookServiceURLProtocol.state.requests.first?.value(forHTTPHeaderField: "X-Ios-Bundle-Identifier") == Bundle.main.bundleIdentifier)
+        #expect(evidence?.categories == ["Juvenile Fiction"])
+        #expect(BookServiceURLProtocol.state.requests.count == 1)
+        #expect(BookServiceURLProtocol.state.requests.first?.url?.host == "www.googleapis.com")
+    }
+
+    @Test func classificationUsesVerifiedPlainSearchWhenISBNHasNoResults() async throws {
+        let (service, session) = makeService(apiKey: "test-key") { request in
+            let q = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "q" }?.value
+            if q?.hasPrefix("isbn:") == true { return StubResponse(status: 200, json: #"{"totalItems":0}"#) }
+            #expect(q == "The Prison Healer Lynette Noni")
+            return StubResponse(status: 200, json: #"{"items":[{"volumeInfo":{"title":"The Prison Healer","authors":["Lynette Noni"],"categories":["Young Adult Fiction"]}},{"volumeInfo":{"title":"The Prison Healer Box Set","authors":["Lynette Noni"],"categories":["Nonfiction"]}}]}"#)
+        }
+        defer { session.invalidateAndCancel() }
+        let evidence = try await service.classification(isbn: "9780358434559", title: "The Prison Healer", author: "Lynette Noni", savedCategories: [], savedSource: "openlibrary")
+        #expect(evidence?.source == "google")
+        #expect(evidence?.categories == ["Young Adult Fiction"])
+        #expect(BookServiceURLProtocol.state.requests.count == 2)
+    }
+
+    @Test func temporaryISBNFailureStillTriesTitleAndDoesNotDisableNextBook() async throws {
+        let (service, session) = makeService(apiKey: "test-key") { request in
+            let q = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "q" }?.value
+            if q?.hasPrefix("isbn:") == true { return StubResponse(status: 503, json: "{}") }
+            return StubResponse(status: 200, json: #"{"items":[{"volumeInfo":{"title":"The Prison Healer","authors":["Lynette Noni"],"categories":["Young Adult Fiction"]}}]}"#)
+        }
+        defer { session.invalidateAndCancel() }
+        for _ in 0..<2 {
+            let evidence = try await service.classification(isbn: "9780358434559", title: "The Prison Healer", author: "Lynette Noni", savedCategories: [], savedSource: "openlibrary")
+            #expect(evidence?.source == "google")
+        }
+        #expect(BookServiceURLProtocol.state.requests.count == 4)
+    }
+
+    @Test func classificationRateLimitKeepsFallbackAndDoesNotHammerGoogle() async throws {
+        let (service, session) = makeService(apiKey: nil) { _ in
+            StubResponse(status: 429, json: "{}")
+        }
+        defer { session.invalidateAndCancel() }
+        for _ in 0..<2 {
+            let evidence = try await service.classification(isbn: "9780140328721", title: "Matilda", author: "Roald Dahl", savedCategories: ["Fantasy"], savedSource: "openlibrary")
+            #expect(evidence?.source == "openlibrary")
+            #expect(evidence?.categories == ["Fantasy"])
+        }
+        #expect(BookServiceURLProtocol.state.requests.count == 1)
+    }
+
     private static func openLibraryPage(count: Int, firstID: Int, total: Int?) -> String {
         let documents = (firstID..<(firstID + count)).map { id in
             "{\"key\":\"/works/OL\(id)W\",\"title\":\"Book \(id)\",\"author_name\":[\"Author\"]}"
@@ -571,6 +625,97 @@ struct textualTests {
         guard let url = request.url else { return nil }
         return URLComponents(url: url, resolvingAgainstBaseURL: false)?
             .queryItems?.first(where: { $0.name == name })?.value
+    }
+
+    @Test @MainActor func importWithoutISBNResolvesDetailsByTitleAndAuthor() async throws {
+        let (service, session) = makeService(apiKey: nil) { request in
+            if request.url?.path == "/search.json" {
+                return StubResponse(status: 200, json: #"{"docs":[{"key":"/works/OL42543873W","title":"Alchemised","author_name":["SenLinYu"],"cover_i":15137810}]}"#)
+            }
+            return StubResponse(status: 200, json: #"{"title":"Alchemised","description":"A dark fantasy novel.","covers":[15137810]}"#)
+        }
+        defer { session.invalidateAndCancel() }
+        let book = Book(title: "Alchemised", author: "SenLinYu", isbn: "storygraph:imported", googleBooksVolumeId: "storygraph:imported")
+        let viewModel = BookDetailViewModel(booksService: service)
+        await viewModel.fetchVolume(book: book)
+        #expect(viewModel.errorMessage == nil)
+        #expect(viewModel.volume?.volumeInfo?.description == "A dark fantasy novel.")
+        #expect(viewModel.volume?.volumeInfo?.authors == ["SenLinYu"])
+        #expect(viewModel.volume?.id == "openlibrary:OL42543873W")
+        #expect(book.cachedCatalogMetadata != nil)
+        #expect(book.isbn == "storygraph:imported")
+        #expect(book.googleBooksVolumeId == "storygraph:imported")
+        #expect(BookServiceURLProtocol.state.requests.count == 2)
+    }
+
+    @Test func workMatchDoesNotBorrowAnotherEditionsPageCount() async throws {
+        let (service, session) = makeService(apiKey: "test-google-key") { request in
+            if request.url?.path == "/books/v1/volumes" {
+                return StubResponse(status: 200, json: #"{"items":[{"id":"matched","volumeInfo":{"title":"Alchemised","authors":["SenLinYu"]}}]}"#)
+            }
+            return StubResponse(status: 200, json: #"{"id":"matched","volumeInfo":{"title":"Alchemised","description":"Available description","pageCount":999}}"#)
+        }
+        defer { session.invalidateAndCancel() }
+        let result = try await service.matchedBook(title: "Alchemised", author: "SenLinYu")
+        #expect(result?.volumeInfo?.description == "Available description")
+        #expect(result?.volumeInfo?.pageCount == nil)
+    }
+
+    @Test @MainActor func titleResolutionDoesNotUseAnotherAuthorsBook() async {
+        let (service, session) = makeService(apiKey: nil) { _ in
+            StubResponse(status: 200, json: #"{"docs":[{"key":"/works/OL1W","title":"Alchemised","author_name":["Another Author"]}]}"#)
+        }
+        defer { session.invalidateAndCancel() }
+        let book = Book(title: "Alchemised", author: "SenLinYu", isbn: "", googleBooksVolumeId: "storygraph:imported")
+        let viewModel = BookDetailViewModel(booksService: service)
+        await viewModel.fetchVolume(book: book)
+        #expect(viewModel.volume?.volumeInfo?.title == "Alchemised")
+        #expect(viewModel.volume?.volumeInfo?.authors == ["SenLinYu"])
+        #expect(book.cachedCatalogMetadata == nil)
+        #expect(viewModel.errorMessage == "No additional details are available for this book.")
+        #expect(BookServiceURLProtocol.state.requests.count == 1)
+    }
+
+    @Test func firstCoverProviderReturnsWithoutQueryingGoogleAndSharesTheDetailSearch() async throws {
+        let (service, session) = makeService(apiKey: "test-google-key") { request in
+            #expect(request.url?.host == "openlibrary.org")
+            if request.url?.path == "/search.json" {
+                return StubResponse(status: 200, json: #"{"docs":[{"key":"/works/OL42543873W","title":"Alchemised","author_name":["SenLinYu"],"cover_i":15137810}]}"#)
+            }
+            return StubResponse(status: 200, json: #"{"title":"Alchemised","description":"A dark fantasy novel.","covers":[15137810]}"#)
+        }
+        defer { session.invalidateAndCancel() }
+        let identity = BookCoverIdentity(title: "Alchemised", author: "SenLinYu")
+        let covers = try await service.replacementCoverURLs(for: identity)
+        #expect(covers == ["https://covers.openlibrary.org/b/id/15137810-M.jpg?default=false"])
+        #expect(BookServiceURLProtocol.state.requests.count == 1)
+        let book = try await service.matchedBook(title: identity.title, author: identity.author)
+        #expect(book?.volumeInfo?.description == "A dark fantasy novel.")
+        #expect(BookServiceURLProtocol.state.requests.count == 2)
+    }
+
+    @Test func replacementCoversRejectWrongAuthorsAndCacheTheLookup() async throws {
+        let (service, session) = makeService(apiKey: nil) { _ in
+            StubResponse(status: 200, json: #"{"docs":[{"key":"/works/OL1W","title":"Earthsea","author_name":["Wrong Author"],"cover_i":11},{"key":"/works/OL2W","title":"Earthsea","author_name":["Ursula K. Le Guin"],"cover_i":22},{"key":"/works/OL3W","title":"Another Book","author_name":["Ursula K. Le Guin"],"cover_i":33}]}"#)
+        }
+        defer { session.invalidateAndCancel() }
+        let identity = BookCoverIdentity(title: "Earthsea", author: "Ursula K. Le Guin")
+        let first = try await service.replacementCoverURLs(for: identity)
+        let second = try await service.replacementCoverURLs(for: identity)
+        #expect(first == ["https://covers.openlibrary.org/b/id/22-M.jpg?default=false"])
+        #expect(second == first)
+        #expect(BookServiceURLProtocol.state.requests.count == 1)
+    }
+
+    @Test func replacementCoverMissesDoNotSearchRepeatedly() async throws {
+        let (service, session) = makeService(apiKey: nil) { _ in
+            StubResponse(status: 200, json: #"{"docs":[]}"#)
+        }
+        defer { session.invalidateAndCancel() }
+        let identity = BookCoverIdentity(title: "Missing Book", author: "Author")
+        #expect(try await service.replacementCoverURLs(for: identity).isEmpty)
+        #expect(try await service.replacementCoverURLs(for: identity).isEmpty)
+        #expect(BookServiceURLProtocol.state.requests.count == 1)
     }
 
     private static let openLibrarySearch = #"""

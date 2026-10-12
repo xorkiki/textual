@@ -24,11 +24,13 @@ struct AddBookView: View {
                 Color.inkwell.ignoresSafeArea()
                 VStack(spacing: 0) {
                     searchBar
+                        .textualChromeBackground(edge: .top)
+                        .zIndex(1)
                     searchContent
                 }
             }
             .navigationBarTitleDisplayMode(.large)
-            .toolbarBackground(Color.inkwell, for: .navigationBar)
+            .textualNavigationChrome()
             .toolbar {
                 ToolbarItem(placement: .principal) {
                     Text("Add Book")
@@ -266,19 +268,11 @@ struct BookSearchResultRow: View {
             HStack(spacing: 16) {
                 // Cover image
                 let coverURLString = viewModel.extractCoverURL(from: item)
-                if !coverURLString.isEmpty {
-                    BookCoverImage(urlString: coverURLString, width: 60, height: 90)
-                } else {
-                    Rectangle()
-                        .fill(Color.velvet.opacity(0.3))
-                        .frame(width: 60, height: 90)
-                        .overlay {
-                            Image(systemName: "book.closed")
-                                .foregroundColor(.ghost)
-                        }
-                        .cornerRadius(4)
-                }
-                
+                BookCoverImage(urlString: coverURLString, width: 60, height: 90,
+                    identity: BookCoverIdentity(title: viewModel.extractTitle(from: item),
+                        author: viewModel.extractAuthor(from: item), isbn: viewModel.extractISBN(from: item),
+                        catalogID: item.id))
+
                 // Title and Author
                 VStack(alignment: .leading, spacing: 4) {
                     Text(viewModel.extractTitle(from: item))

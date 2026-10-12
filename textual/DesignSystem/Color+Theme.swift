@@ -13,6 +13,7 @@ extension Color {
     static let paper = Color(hex: "F2F2F2")
     static let ghost = Color(hex: "8C8C8C")
     static let velvet = Color(hex: "232323")
+    static let dropdownSurface = Color(hex: "171717")
     
     // MARK: - Primary
     static let bloodletter = Color(hex: "4C1308")

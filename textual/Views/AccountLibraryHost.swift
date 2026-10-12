@@ -46,6 +46,7 @@ struct AccountLibraryHost: View {
         }
         .onDisappear {
             store?.repository.stop()
+            store?.reviews.stop()
             store = nil
         }
     }
@@ -66,6 +67,7 @@ struct AccountLibraryHost: View {
 final class AccountLibraryStore {
     let container: ModelContainer
     let repository: LibraryRepository
+    let reviews: ReaderReviewStore
     private(set) var legacyBookCount = 0
     @ObservationIgnored private let legacyContainer: ModelContainer
     @ObservationIgnored private let userID: UUID
@@ -85,11 +87,13 @@ final class AccountLibraryStore {
             .appendingPathComponent(project, isDirectory: true)
             .appendingPathComponent(userID.uuidString.lowercased(), isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let schema = Schema([Book.self, Tag.self, LibrarySyncState.self])
+        let schema = Schema([Book.self, Tag.self, LibrarySyncState.self, ReaderProfileDraft.self, ReaderReviewDraft.self])
         let configuration = ModelConfiguration(schema: schema,
             url: directory.appendingPathComponent("library.store"), cloudKitDatabase: .none)
         container = try ModelContainer(for: schema, configurations: [configuration])
         repository = LibraryRepository(client: client, userID: userID, modelContext: container.mainContext)
+        reviews = ReaderReviewStore(userID: userID, context: container.mainContext,
+            transport: SupabaseReaderReviewTransport(client: client))
         if defaults.string(forKey: importMarker) == nil {
             legacyBookCount = try legacyContainer.mainContext.fetchCount(FetchDescriptor<Book>(
                 predicate: #Predicate<Book> { !$0.isRemovedFromLibrary }))
@@ -153,6 +157,7 @@ struct LibraryConflictsView: View {
                 .padding()
             }
             .navigationTitle("Review changes")
+            .textualNavigationChrome()
             .toolbar { Button("Done") { dismiss() } }
         }
         .preferredColorScheme(.dark)

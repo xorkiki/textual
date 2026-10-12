@@ -232,3 +232,73 @@ Apply `supabase/migrations/004_storygraph_import.sql` after the account foundati
 before distributing this client. Reading metadata is stored in owner-private library
 entries and uses the existing account assertion, RLS, revisions and durable outbox.
 Shared catalog entries contain identifiers only. No personal export is bundled.
+
+
+### Public reader cards and keeper shelves
+
+Profile replaces the Home tab and opens first. Its full-width library card shows the
+account name, username, completed-read count (including rereads), known genre count,
+and reread count using the same history rules as Stats. The lowercase reader sentence
+is composed on device from completed books’ catalog genres, imported moods, and book
+pace. Fewer than three distinct completed books gets a judgment-pending line; missing
+metadata is never treated as a known preference. It does not infer actual reading times.
+
+Readers choose up to 15 favorites from My Archive. Only covers appear on the shelf;
+tapping opens catalog details. Drag a cover onto another to reorder, or use the context
+menu / VoiceOver actions to move earlier, move later, or remove. Changes persist in an
+account-local SwiftData draft, retry on foreground, pull to refresh, or Try again, and
+use revision checks to avoid silently overwriting another device’s changes.
+
+Apply `supabase/migrations/005_public_reader_profiles.sql` once after 004 to enable
+public viewing. A separate validated projection publishes only the card’s aggregate
+stats, generated sentence, and selected book metadata. Existing private-table policies
+remain unchanged. Profiles are visible to signed-in Textual readers through exact
+username lookup from a reader link, consistent with the app’s account gate.
+The eye button previews that visitor layout. `textual://reader/<username>` opens a
+reader in the installed app; this is not a hosted web profile.
+
+
+### Library-card profile photos
+
+Tap the rounded plus-sign space on your card to open the native Photos picker;
+tap an existing photo to replace it. Only the selected image is read. The app resizes
+it to a maximum of 768 pixels and writes a JPEG without EXIF/location metadata.
+The selected image and a durable upload flag are saved in the account-local draft.
+Upload happens before the public card references the photo; a failed upload remains
+queued for Retry, foregrounding, or pull to refresh. A successful upload is reused if
+only card publication needs retrying. Public visitor cards show the selected photo
+without an editing control.
+
+Apply `supabase/migrations/006_reader_profile_photos.sql` once after 005. It creates
+the private `textual-avatars` bucket (JPEG, maximum 2 MB), limits writes to the owning
+account, permits signed-in readers to view the current published photo, and validates
+photo ownership/existence when publishing a card. Pending and replaced photos stay
+owner-only. This migration does not change signup, email verification, or private
+library access. Automatic cleanup of replaced photo files is not implemented.
+
+Deployment status for this feature: 005 and 006 are prepared and tested locally;
+live application and end-to-end account/photo verification are pending admin access.
+
+
+### Apply the public-profile backend setup
+
+For the existing Textual Supabase project, open **SQL Editor → New query**, paste the
+entire contents of `supabase/setup_public_profiles.sql`, and run it. This combines
+005 and 006 in one transaction, checks that the account/library foundation exists,
+and can be rerun without deleting saved cards, accounts, or photos. It replaces the
+need to apply 005 and 006 separately. Success returns the message "Public profiles
+and photo storage are installed. Reopen Profile in Textual and tap Try again."
+
+The app then publishes its queued public card, selected books, and selected photo.
+Verify the card from a second signed-in account using `textual://reader/<username>`.
+The owner’s eye-button preview confirms layout only; it is not a server-sync check.
+This setup script has passed local permission and repeat-application tests; it has
+not yet been executed against the live project because dashboard access is blocked.
+
+
+## Review and community-data foundation
+
+See [review architecture](docs/review-architecture.md) for the account-local draft/outbox,
+owner-private review records, opt-in community summaries, verified edition links,
+and next review-flow integration steps. Migration `007_reader_reviews.sql` is prepared
+and tested locally, **not deployed**. Existing imports are not automatically shared.

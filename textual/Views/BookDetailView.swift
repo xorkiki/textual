@@ -22,17 +22,7 @@ struct BookDetailView: View {
             contentView(volume: viewModel.volume ?? viewModel.savedVolume(book: book))
         }
         .id(book.id)
-        .navigationBarTitleDisplayMode(.inline)
-        .navigationBarBackButtonHidden(true)
-        .toolbarBackground(Color.inkwell, for: .navigationBar)
-        .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                Button { dismiss() } label: {
-                    DesignSystemIconView(.arrowLeft, size: 24, color: .paper)
-                }
-                .buttonStyle(IconButtonStyle())
-            }
-        }
+        .textualBackHeader { dismiss() }
         .task(id: book.id) {
             await viewModel.fetchVolume(book: book)
         }
@@ -69,22 +59,6 @@ struct BookDetailView: View {
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
-                }
-
-                if let reading = book.importedReading {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Your reading").textStyle(.subheadingSmall).foregroundColor(.paper)
-                        Text(reading.statusLabel).textStyle(.bodyMedium).foregroundColor(.paper)
-                        if let rating = reading.rating {
-                            Text("Your rating: \(rating.formatted()) / 5").textStyle(.bodySmall).foregroundColor(.ghost)
-                        }
-                        if let count = reading.readCount, count > 0 {
-                            Text("Read \(count) \(count == 1 ? "time" : "times")").textStyle(.bodySmall).foregroundColor(.ghost)
-                        }
-                        if let date = reading.lastDateRead ?? reading.periods.last?.finishedOn {
-                            Text("Last finished: \(date)").textStyle(.bodySmall).foregroundColor(.ghost)
-                        }
-                    }
                 }
 
                 if viewModel.isLoading {
@@ -135,26 +109,11 @@ struct BookDetailView: View {
         }
     }
     
-    @ViewBuilder
     private func coverImage(urlString: String) -> some View {
-        if !urlString.isEmpty {
-            BookCoverImage(urlString: urlString, width: 140, height: 210)
-                .shadow(color: .inkwell.opacity(0.3), radius: 8, x: 0, y: 4)
-        } else {
-            coverPlaceholder
-        }
+        SavedBookCover(book: book, width: 140, height: 210, fetchedURL: urlString)
+            .shadow(color: .inkwell.opacity(0.3), radius: 8, x: 0, y: 4)
     }
-    
-    private var coverPlaceholder: some View {
-        RoundedRectangle(cornerRadius: 8)
-            .fill(Color.velvet.opacity(0.3))
-            .frame(width: 140, height: 210)
-            .overlay {
-                Image(systemName: "book.closed")
-                    .foregroundColor(.ghost)
-                    .font(.system(size: 48))
-            }
-    }
+
 }
 
 // MARK: - Flow Layout for Badges

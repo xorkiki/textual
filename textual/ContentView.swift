@@ -38,7 +38,14 @@ struct TextualTabView: View {
     let account: AccountSession
     let legacyBookCount: Int
     let importLegacy: (() async throws -> Void)?
-    @State private var selectedTab: TextualTab = .discover
+    @State private var selectedTab: TextualTab = .home
+    @State private var shelfDrag = ReaderShelfDrag()
+    @Environment(\.scenePhase) private var scenePhase
+    @Query(filter: #Predicate<Book> { !$0.isRemovedFromLibrary }) private var cachedBooks: [Book]
+
+    private var statsCacheKey: String {
+        cachedBooks.map { "\($0.id)|\($0.isbn)|\($0.title)|\($0.author)|\($0.googleBooksVolumeId ?? "")|\($0.storyGraphData?.hashValue ?? 0)" }.sorted().joined()
+    }
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -55,13 +62,24 @@ struct TextualTabView: View {
             TextualBottomBar(selection: $selectedTab)
                 .frame(maxWidth: 440)
                 .padding(.horizontal, TextualNavigationLayout.outerPadding)
-                .padding(.bottom, TextualNavigationLayout.outerPadding)
+                .padding(.bottom, TextualNavigationLayout.bottomPadding)
                 .frame(maxWidth: .infinity)
+                .textualChromeBackground(edge: .bottom, fadeLength: 36)
         }
-        // Match the side margin at the physical bottom edge, without adding
-        // the home-indicator safe area a second time. Keyboard avoidance stays on.
+        // Keep the compact footer at the physical bottom edge without counting
+        // the home-indicator safe area twice. Keyboard avoidance stays on.
         .ignoresSafeArea(.container, edges: .bottom)
         .background(Color.inkwell)
+        .environment(\.readerShelfDrag, shelfDrag)
+        .onChange(of: selectedTab) { _, _ in shelfDrag.cancel() }
+        .onChange(of: scenePhase) { _, phase in if phase != .active { shelfDrag.cancel() } }
+        .onDisappear { shelfDrag.cancel() }
+        .onOpenURL { url in
+            if ReaderProfileRoute.username(url) != nil { selectedTab = .home }
+        }
+        .task(id: statsCacheKey) {
+            await StatsMetadataCache.warm(cachedBooks)
+        }
     }
 
     @ViewBuilder
@@ -73,7 +91,11 @@ struct TextualTabView: View {
             TextualMenuPage(repository: repository, account: account,
                             legacyBookCount: legacyBookCount, importLegacy: importLegacy,
                             openArchive: { selectedTab = .library })
-        case .home, .discover, .stats:
+        case .stats:
+            TextualStatsPage()
+        case .home:
+            ReaderProfileView(account: account)
+        case .discover:
             NavigationStack {
                 Color.inkwell.ignoresSafeArea()
                     .textualPageTitle(tab.title)
@@ -82,11 +104,97 @@ struct TextualTabView: View {
     }
 }
 
+/// Filters stay local to this account's Stats page; years follow the imported history.
+private struct TextualStatsPage: View {
+    @Query(filter: #Predicate<Book> { !$0.isRemovedFromLibrary }) private var books: [Book]
+    @State private var category: StatsCategory = .read
+    @State private var selectedYear: Int? = nil
+
+    private enum StatsCategory: String, CaseIterable, Identifiable {
+        case read, tbr, dnf
+        var id: String { rawValue }
+        var title: String {
+            switch self {
+            case .read: return "Read"
+            case .tbr: return "TBR"
+            case .dnf: return "DNF"
+            }
+        }
+        var accessibleTitle: String {
+            switch self {
+            case .read: return "Read"
+            case .tbr: return "To be read"
+            case .dnf: return "Did not finish"
+            }
+        }
+    }
+
+    private var statsFilter: ReadingStatsFilter {
+        ReadingStatsFilter(status: category == .read ? "read" : (category == .tbr ? "to-read" : "did-not-finish"), year: selectedYear)
+    }
+
+    // Every stats component receives the same filtered library and date scope.
+    private var statsBooks: [Book] {
+        books.filter { book in book.importedReading.map { statsFilter.includes($0) } ?? false }
+    }
+
+    private var recordedYears: [Int] {
+        let dates = books.compactMap(\.importedReading).flatMap { reading -> [Date] in
+            ReadingStatsFilter.completedDates(reading) + [ReadingStatsFilter.date(reading.dateAdded)].compactMap { $0 }
+        }
+        return Set(dates.map { Calendar(identifier: .gregorian).component(.year, from: $0) }).sorted(by: >)
+    }
+
+    var body: some View {
+        NavigationStack {
+            ZStack(alignment: .topLeading) {
+                Color.inkwell.ignoresSafeArea()
+                ScrollView {
+                    ReadingStatsCharts(books: statsBooks, filter: statsFilter)
+                    .padding(.horizontal, 24)
+                    .padding(.top, 12)
+                    .padding(.bottom, TextualNavigationLayout.bottomExtent + 24)
+                }
+                .scrollIndicators(.hidden)
+                .textualPageHeader(compact: true) {
+                    HStack(spacing: 10) {
+                        Text("STATS")
+                            .font(.custom("CormorantGaramond-Regular", size: 28))
+                            .foregroundStyle(Color.paper)
+                            .accessibilityAddTraits(.isHeader)
+                        Spacer(minLength: 8)
+                        TextualDropdown(label: "Reading status", title: category.title,
+                            options: StatsCategory.allCases.map {
+                                TextualDropdownOption(value: $0, title: $0.title, accessibilityTitle: $0.accessibleTitle)
+                            }, selection: $category)
+                            .accessibilityIdentifier("stats.category")
+                        TextualDropdown(label: "Time period", title: selectedYear.map(String.init) ?? "All time",
+                            options: [TextualDropdownOption(value: Int?.none, title: "All time")]
+                                + recordedYears.map { TextualDropdownOption(value: Optional($0), title: String($0)) },
+                            selection: $selectedYear)
+                            .accessibilityIdentifier("stats.period")
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, 24)
+                }
+            }
+            .textualDropdownHost()
+            .toolbar(.hidden, for: .navigationBar)
+            .onChange(of: recordedYears) { _, years in
+                if let selectedYear, !years.contains(selectedYear) { self.selectedYear = nil }
+            }
+        }
+    }
+
+
+}
+
 enum TextualNavigationLayout {
     static let itemHeight: CGFloat = 44
-    static let innerPadding: CGFloat = 8
+    static let innerPadding: CGFloat = 6
     static let outerPadding: CGFloat = 24
-    static var bottomExtent: CGFloat { itemHeight + innerPadding * 2 + outerPadding }
+    static let bottomPadding: CGFloat = 12
+    static var bottomExtent: CGFloat { itemHeight + innerPadding * 2 + bottomPadding }
 }
 
 enum TextualTab: String, CaseIterable, Identifiable {
@@ -95,6 +203,7 @@ enum TextualTab: String, CaseIterable, Identifiable {
     var id: String { rawValue }
     var title: String {
         switch self {
+        case .home: return "Profile"
         case .library: return "My Archive"
         case .discover: return "The Archive"
         default: return rawValue.capitalized
@@ -102,7 +211,7 @@ enum TextualTab: String, CaseIterable, Identifiable {
     }
     var symbol: String {
         switch self {
-        case .home: return "house"
+        case .home: return "person.crop.circle"
         case .library: return "books.vertical"
         case .discover: return "safari"
         case .stats: return "chart.bar"
@@ -113,8 +222,47 @@ enum TextualTab: String, CaseIterable, Identifiable {
 
 private struct TextualBottomBar: View {
     @Binding var selection: TextualTab
+    @Environment(\.readerShelfDrag) private var shelfDrag
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private var dragging: Bool { shelfDrag?.isDragging == true }
+    private var motion: Animation { reduceMotion ? .easeInOut(duration: 0.15) : .spring(response: 0.34, dampingFraction: 1) }
 
     var body: some View {
+        GeometryReader { geometry in
+            ZStack {
+                tabs
+                    .frame(width: geometry.size.width)
+                    .opacity(dragging ? 0 : 1)
+                    .scaleEffect(dragging && !reduceMotion ? 0.94 : 1)
+                    .allowsHitTesting(!dragging)
+                    .accessibilityHidden(dragging)
+                if dragging, let shelfDrag {
+                    Image(systemName: "trash")
+                        .font(.system(size: 23, weight: .regular))
+                        .foregroundStyle(shelfDrag.isOverTrash ? Color.paper : Color.ghost)
+                        .transition(.opacity.combined(with: .scale(scale: reduceMotion ? 1 : 0.6)))
+                        .accessibilityHidden(true)
+                    ReaderShelfTrashTarget(state: shelfDrag)
+                        .frame(width: 56, height: 56)
+                        .accessibilityLabel("Remove book from shelf")
+                        .accessibilityHint("Drop the lifted book here. It stays in your archive.")
+                        .accessibilityIdentifier("profile.shelfTrash")
+                }
+            }
+            .frame(width: dragging ? 56 : geometry.size.width, height: 56)
+            .background {
+                Capsule()
+                    .fill(dragging && shelfDrag?.isOverTrash == true ? Color.bloodletter : Color.velvet.opacity(0.35))
+                    .animation(.easeInOut(duration: 0.16), value: dragging && shelfDrag?.isOverTrash == true)
+            }
+            .clipShape(Capsule())
+            .frame(maxWidth: .infinity)
+            .animation(motion, value: dragging)
+        }
+        .frame(height: 56)
+    }
+
+    private var tabs: some View {
         HStack(spacing: 0) {
             ForEach(TextualTab.allCases) { tab in
                 Button {
@@ -138,14 +286,13 @@ private struct TextualBottomBar: View {
             }
         }
         .padding(TextualNavigationLayout.innerPadding)
-        .background(Color.velvet.opacity(0.35), in: Capsule())
     }
 
     @ViewBuilder
     private func tabIcon(_ tab: TextualTab) -> some View {
         switch tab {
         case .home:
-            Image(designSystemIcon: .homeSimple)
+            Image(designSystemIcon: .profile)
                 .renderingMode(.template).resizable().scaledToFit()
         case .menu:
             Image(designSystemIcon: .menu)
@@ -244,15 +391,14 @@ private struct TextualMenuPage: View {
 private extension View {
     func textualPageTitle(_ title: String) -> some View {
         self
-            .navigationBarTitleDisplayMode(.large)
-            .toolbarBackground(Color.inkwell, for: .navigationBar)
-            .toolbar {
-                ToolbarItem(placement: .principal) {
-                    Text(title.uppercased())
-                        .font(.custom("CormorantGaramond-Regular", size: 28))
-                        .foregroundStyle(Color.paper)
-                        .accessibilityAddTraits(.isHeader)
-                }
+            .toolbar(.hidden, for: .navigationBar)
+            .textualPageHeader {
+                Text(title.uppercased())
+                    .font(.custom("CormorantGaramond-Regular", size: 28, relativeTo: .title2))
+                    .foregroundStyle(Color.paper)
+                    .accessibilityAddTraits(.isHeader)
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .padding(.horizontal, 24)
             }
     }
 }

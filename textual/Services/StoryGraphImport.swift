@@ -25,6 +25,17 @@ struct StoryGraphReadingData: Codable, Equatable, Sendable {
     let owned: Bool?
     let originalFields: [String: String]
 
+    /// Owner-private queue state, carried by the existing library sync payload.
+    var upNextPosition: Int? = nil
+    var upNextExcluded: Bool? = nil
+
+    func preservingQueue(from saved: Self?) -> Self {
+        var copy = self
+        copy.upNextPosition = saved?.upNextPosition
+        copy.upNextExcluded = saved?.upNextExcluded
+        return copy
+    }
+
     var statusLabel: String {
         switch status {
         case "read": return "Read"

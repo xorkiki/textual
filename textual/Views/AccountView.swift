@@ -54,6 +54,8 @@ struct AccountView: View {
             Color.inkwell.ignoresSafeArea()
             VStack(spacing: 0) {
                 navigationBar
+                    .textualChromeBackground(edge: .top)
+                    .zIndex(1)
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 28) {
                         content
@@ -70,6 +72,7 @@ struct AccountView: View {
                 .scrollDismissesKeyboard(.interactively)
                 .accessibilityIdentifier("auth.content")
                 actions
+                    .textualChromeBackground(edge: .bottom, fadeInside: true)
             }
         }
         .environment(\.colorScheme, .dark)
@@ -119,14 +122,7 @@ struct AccountView: View {
                     .frame(minHeight: 44)
                     .disabled(isBusy)
             } else if canGoBack {
-                Button(action: goBack) {
-                    Image(systemName: "arrow.left")
-                        .font(.system(size: 20, weight: .regular))
-                        .foregroundStyle(Color.paper)
-                        .frame(width: 44, height: 44)
-                        .contentShape(Rectangle())
-                }
-                .accessibilityLabel(screen == .recoveryPassword ? "Cancel password recovery and sign out" : "Back")
+                TextualBackButton(label: screen == .recoveryPassword ? "Cancel password recovery and sign out" : "Back", action: goBack)
                 .accessibilityIdentifier("auth.back")
                 .disabled(isBusy)
             } else {

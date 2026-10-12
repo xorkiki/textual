@@ -42,6 +42,7 @@ struct StoryGraphImportView: View {
                                 countRow("New books", preview.added)
                                 countRow("Reading data updates", preview.updated)
                                 countRow("Already imported", preview.unchanged)
+                                countRow("Completed reads, including rereads", document.records.reduce(0) { $0 + ReadingStatsFilter.completedCount($1.reading) })
                                 Divider().overlay(Color.velvet)
                                 ForEach(["read", "currently-reading", "to-read", "did-not-finish"], id: \.self) { status in
                                     if let count = document.statusCounts[status], count > 0 {
@@ -52,6 +53,10 @@ struct StoryGraphImportView: View {
                             Text("Reading dates, rereads, ratings, reviews, moods, tags and ownership are preserved. Matching books keep their current titles and covers; their StoryGraph reading data will be updated. Nothing else is removed.")
                                 .font(.custom("PlusJakartaSans-Regular", size: 13, relativeTo: .caption))
                                 .foregroundStyle(Color.ghost)
+                            DisclosureGroup("About imported stats") {
+                                Text("Completed reads count regardless of a book’s current status. Missing dates stay undated. The export does not contain page totals or StoryGraph’s calculated finish-time average; Textual uses available catalog pages and imported reading dates.")
+                                    .font(.caption)
+                            }
                             if document.duplicateRows > 0 { Text("\(document.duplicateRows) identical duplicate rows skipped.") }
                             if !document.warnings.isEmpty {
                                 DisclosureGroup("\(document.warnings.count) import notes") {
@@ -99,6 +104,7 @@ struct StoryGraphImportView: View {
             .background(Color.inkwell)
             .navigationTitle("Import reading data")
             .navigationBarTitleDisplayMode(.inline)
+            .textualNavigationChrome()
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() }.disabled(isSaving) } }
         }
         .tint(Color.paper)
