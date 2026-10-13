@@ -294,8 +294,10 @@ and photo storage are installed. Reopen Profile in Textual and tap Try again."
 The app then publishes its queued public card, selected books, and selected photo.
 Verify the card from a second signed-in account using `textual://reader/<username>`.
 The owner’s eye-button preview confirms layout only; it is not a server-sync check.
-This setup script has passed local permission and repeat-application tests; it has
-not yet been executed against the live project because dashboard access is blocked.
+This setup script has passed local permission and repeat-application tests. It is
+already applied to the live project: a read-only check on October 12, 2026 confirmed
+`textual_reader_profiles`, the read/publish/avatar functions, the `textual-avatars`
+bucket, and all three avatar storage policies. Do not rerun it there.
 
 
 ## Reviews
