@@ -6,20 +6,18 @@ import SwiftData
 @MainActor
 enum UpNextQueue {
     static func books(in archive: [Book]) -> [Book] {
-        archive.filter { book in
-            guard !book.isRemovedFromLibrary, book.importedReading?.status != "currently-reading" else { return false }
-            let reading = book.importedReading
-            if reading?.upNextExcluded == true { return false }
+        archive.filter { !$0.isRemovedFromLibrary }.map { ($0, $0.importedReading) }.filter { book, reading in
+            guard reading?.status != "currently-reading", reading?.upNextExcluded != true else { return false }
             return reading?.upNextPosition != nil || (reading?.tags.contains { tag in
                 tag.lowercased().filter(\.isLetter) == "upnext"
             } ?? false)
         }.sorted { lhs, rhs in
-            let a = lhs.importedReading?.upNextPosition ?? Int.max
-            let b = rhs.importedReading?.upNextPosition ?? Int.max
+            let a = lhs.1?.upNextPosition ?? Int.max
+            let b = rhs.1?.upNextPosition ?? Int.max
             if a != b { return a < b }
-            let comparison = lhs.title.localizedStandardCompare(rhs.title)
-            return comparison == .orderedSame ? lhs.id.uuidString < rhs.id.uuidString : comparison == .orderedAscending
-        }
+            let comparison = lhs.0.title.localizedStandardCompare(rhs.0.title)
+            return comparison == .orderedSame ? lhs.0.id.uuidString < rhs.0.id.uuidString : comparison == .orderedAscending
+        }.map { $0.0 }
     }
 
     static func moving(_ id: UUID, to target: UUID, in books: [Book]) -> [Book] {
@@ -59,7 +57,7 @@ enum UpNextQueue {
         }
     }
 
-    private static func metadata(for book: Book) -> StoryGraphReadingData {
+    static func metadata(for book: Book) -> StoryGraphReadingData {
         book.importedReading ?? StoryGraphReadingData(
             sourceKey: SHA256.hash(data: Data(book.id.uuidString.utf8)).map { String(format: "%02x", $0) }.joined(),
             status: "to-read", dateAdded: nil, lastDateRead: nil, periods: [], readCount: nil,

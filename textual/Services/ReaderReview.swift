@@ -5,7 +5,6 @@ import SwiftData
 /// provenance are included in the payload that can contribute to discovery.
 struct ReaderReviewContent: Codable, Equatable, Sendable {
     enum Pace: String, Codable, CaseIterable, Sendable { case fast, medium, slow }
-    enum Fiction: String, Codable, Sendable { case fiction, nonfiction }
     enum Visibility: String, Codable, Sendable { case `private`, `public` }
     var version = 1
     /// Quarter-star units: 0...20 represents 0...5 stars, with nil = unrated.
@@ -14,10 +13,13 @@ struct ReaderReviewContent: Codable, Equatable, Sendable {
     var spoilers = false
     var moods: [String] = []
     var pace: Pace?
-    var genres: [String] = []
-    var fiction: Fiction?
     var visibility: Visibility = .private
     var contribute = false
+
+    var hasAssessment: Bool {
+        rating != nil || !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || !moods.isEmpty || pace != nil
+    }
 
     func validated() throws -> Self {
         guard version == 1, rating.map({ (0...20).contains($0) }) ?? true,
@@ -31,7 +33,6 @@ struct ReaderReviewContent: Codable, Equatable, Sendable {
             return values
         }
         result.moods = try terms(moods)
-        result.genres = try terms(genres)
         return result
     }
 }
@@ -80,10 +81,8 @@ struct CommunityReviewSummary: Codable, Equatable, Sendable {
     }
     let minimumContributors: Int
     let pace: Distribution?
-    let fiction: Distribution?
     let rating: Distribution?
     let moods: Distribution?
-    let genres: Distribution?
 }
 
 /// Stored inside the existing account-specific SwiftData container. Draft edits
@@ -98,11 +97,28 @@ final class ReaderReviewDraft {
     var pendingData: Data?
     var conflictData: Data?
     var hasLoadedRemote = false
+    /// Distinguishes a deliberately cleared draft from an empty downloaded cache.
+    var hasLocalEdits: Bool = false
 
     var content: ReaderReviewContent? { try? JSONDecoder().decode(ReaderReviewContent.self, from: contentData) }
     var remote: RemoteReaderReview? { remoteData.flatMap { try? JSONDecoder().decode(RemoteReaderReview.self, from: $0) } }
     var pending: ReaderReviewMutation? { pendingData.flatMap { try? JSONDecoder().decode(ReaderReviewMutation.self, from: $0) } }
     var conflict: RemoteReaderReview? { conflictData.flatMap { try? JSONDecoder().decode(RemoteReaderReview.self, from: $0) } }
+
+    /// Only explicitly saved values appear as the review; unsaved edits stay drafts.
+    var savedContent: ReaderReviewContent? {
+        if let pending { return pending.deleted ? nil : pending.content }
+        return remote.flatMap { $0.deleted ? nil : $0.content }
+    }
+    var hasUnsavedChanges: Bool {
+        content != (savedContent ?? ReaderReviewContent())
+    }
+    var statusLabel: String {
+        if conflict != nil { return "Needs your attention" }
+        if pending != nil { return "Waiting to sync" }
+        if hasUnsavedChanges { return "Draft saved on this device" }
+        return savedContent == nil ? "No review yet" : "Saved · Only you"
+    }
 
     init(userID: UUID, localBookID: UUID, content: ReaderReviewContent) throws {
         key = Self.key(userID: userID, bookID: localBookID)
@@ -114,4 +130,75 @@ final class ReaderReviewDraft {
 
 enum ReaderReviewError: Error {
     case invalidContent, bookNotSynced, loadRemoteFirst, submissionPending, conflict, invalidResponse
+}
+
+
+/// A single precedence rule for book detail, the reviews list, and editor prefilling.
+/// Imports remain account-private library data; displaying them creates no submissions.
+@MainActor
+struct ReaderReviewPresentation {
+    let draft: ReaderReviewDraft?
+    let imported: ReaderReviewContent?
+    private let originalImportedBody: String?
+
+    init(book: Book, draft: ReaderReviewDraft?) {
+        self.draft = draft
+        let reading = book.importedReading
+        imported = Self.importedContent(reading)
+        originalImportedBody = reading?.originalFields["Review"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    /// Also repairs untouched copies saved by earlier versions, without changing
+    /// stored import data, frozen submissions, or prose the reader has since edited.
+    private func readable(_ value: ReaderReviewContent?) -> ReaderReviewContent? {
+        guard var value else { return nil }
+        if let originalImportedBody, value.body == originalImportedBody, let imported {
+            value.body = imported.body
+            value.spoilers = value.spoilers || imported.spoilers
+        }
+        return value
+    }
+    static func importedContent(_ reading: StoryGraphReadingData?) -> ReaderReviewContent? {
+        guard let reading else { return nil }
+        var content = ReaderReviewContent()
+        if let rating = reading.rating, rating.isFinite, (0...5).contains(rating) {
+            content.rating = Int((rating * 4).rounded())
+        }
+        let text = CatalogDescriptionHTML.plainReview(reading.originalFields["Review"] ?? "")
+        content.body = text.body
+        content.spoilers = text.spoilers
+        return content.hasAssessment ? content : nil
+    }
+    var content: ReaderReviewContent? {
+        // A withdrawal is authoritative too: don't resurrect an older imported review.
+        if draft?.pending != nil || draft?.remote != nil { return readable(draft?.savedContent) }
+        return imported
+    }
+    var isImported: Bool { draft?.pending == nil && draft?.remote == nil && imported != nil }
+    var hasDraftChanges: Bool {
+        guard let draft, draft.hasLocalEdits || draft.hasUnsavedChanges else { return false }
+        return readable(draft.content) != (content ?? .init())
+    }
+    var editorContent: ReaderReviewContent {
+        if let draft, draft.hasLocalEdits || draft.hasUnsavedChanges { return readable(draft.content) ?? .init() }
+        return content ?? .init()
+    }
+    var isVisible: Bool { content != nil || hasDraftChanges || draft?.pending != nil || draft?.conflict != nil }
+    var statusLabel: String {
+        if draft?.conflict != nil { return "Needs your attention" }
+        if draft?.pending != nil { return "Waiting to sync" }
+        if hasDraftChanges { return "Draft saved on this device" }
+        return isImported ? "Imported · Only you" : draft?.statusLabel ?? "No review yet"
+    }
+    static func rows(books: [Book], drafts: [ReaderReviewDraft], userID: UUID?, search: String)
+        -> [(book: Book, review: ReaderReviewPresentation)] {
+        let byBook = Dictionary(drafts.filter { $0.userID == userID }.map { ($0.localBookID, $0) },
+                                uniquingKeysWith: { first, _ in first })
+        return books.compactMap { book in
+            let review = Self(book: book, draft: byBook[book.id])
+            guard review.isVisible,
+                  search.isEmpty || book.title.localizedCaseInsensitiveContains(search)
+                    || book.author.localizedCaseInsensitiveContains(search) else { return nil }
+            return (book, review)
+        }
+    }
 }

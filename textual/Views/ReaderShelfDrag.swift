@@ -17,7 +17,9 @@ final class ReaderShelfDrag {
     @ObservationIgnored private var previewTarget: UUID?
     @ObservationIgnored private var previewAnimator: UIViewPropertyAnimator?
     @ObservationIgnored weak var trashView: UIView?
-    func register(_ view: UIView, id: UUID) { targets[id] = WeakShelfTarget(view) }
+    func register(_ view: UIView, id: UUID, cover: UIView? = nil) {
+        targets[id] = WeakShelfTarget(view, cover: cover ?? view)
+    }
     func frame(for id: UUID, in window: UIWindow) -> CGRect? {
         guard let view = targets[id]?.view, view.window === window else { return nil }
         // Hit-test the stable shelf slots, not books moving under a spring animation.
@@ -35,15 +37,20 @@ final class ReaderShelfDrag {
         if overTrash && !isOverTrash { UIImpactFeedbackGenerator(style: .soft).impactOccurred() }
         isOverTrash = overTrash
         let ids = orderedIDs.isEmpty ? Array(targets.keys) : orderedIDs
-        let hit = overTrash ? nil : ids.first { frame(for: $0, in: window)?.insetBy(dx: -6, dy: -6).contains(point) == true }
+        let slots = ids.compactMap { id in frame(for: id, in: window).map { (id: id, frame: $0) } }
+        let hit = overTrash ? nil : ReaderShelfReorder.destination(at: point, slots: slots)
         targetID = hit == bookID ? nil : hit
-        if let hit { previewInsertion(at: hit, in: window) }
+        if let hit {
+            previewInsertion(at: hit, in: window)
+        } else if previewTarget != nil {
+            restorePreview(animated: true)
+        }
     }
     private func stopPreviewAtPresentation() {
         guard let animator = previewAnimator else { return }
-        let current = targets.compactMapValues { $0.view?.layer.presentation()?.affineTransform() }
+        let current = targets.compactMapValues { $0.cover?.layer.presentation()?.affineTransform() }
         animator.stopAnimation(true)
-        for (id, transform) in current { targets[id]?.view?.transform = transform }
+        for (id, transform) in current { targets[id]?.cover?.transform = transform }
         previewAnimator = nil
     }
     private func previewInsertion(at target: UUID, in window: UIWindow) {
@@ -64,7 +71,7 @@ final class ReaderShelfDrag {
         stopPreviewAtPresentation()
         let animations = {
             for (index, id) in order.enumerated() where id != bookID {
-                guard let view = self.targets[id]?.view, let base = self.frame(for: id, in: window) else { continue }
+                guard let view = self.targets[id]?.cover, let base = self.frame(for: id, in: window) else { continue }
                 let slot = slots[index]
                 view.transform = CGAffineTransform(translationX: slot.midX - base.midX, y: slot.maxY - base.maxY)
             }
@@ -76,7 +83,7 @@ final class ReaderShelfDrag {
     }
     func restorePreview(animated: Bool) {
         stopPreviewAtPresentation()
-        let animations = { for target in self.targets.values { target.view?.transform = .identity } }
+        let animations = { for target in self.targets.values { target.cover?.transform = .identity } }
         if animated && !UIAccessibility.isReduceMotionEnabled {
             let animator = UIViewPropertyAnimator(duration: 0.3, dampingRatio: 0.9, animations: animations)
             previewAnimator = animator
@@ -134,6 +141,20 @@ final class ReaderShelfDrag {
 }
 
 enum ReaderShelfReorder {
+    /// Use complete shelf rows, including gaps and the space above short covers.
+    /// Slots stay fixed while their covers animate so the destination cannot oscillate.
+    static func destination(at point: CGPoint, slots: [(id: UUID, frame: CGRect)]) -> UUID? {
+        guard !slots.isEmpty else { return nil }
+        let bounds = slots.reduce(CGRect.null) { $0.union($1.frame) }
+        guard bounds.insetBy(dx: -18, dy: -24).contains(point) else { return nil }
+        let height = slots.map { $0.frame.height }.max() ?? 0
+        guard let nearestRow = slots.min(by: {
+            abs(point.y - ($0.frame.maxY - height / 2)) < abs(point.y - ($1.frame.maxY - height / 2))
+        }) else { return nil }
+        return slots.filter { abs($0.frame.maxY - nearestRow.frame.maxY) < 2 }
+            .min { abs(point.x - $0.frame.midX) < abs(point.x - $1.frame.midX) }?.id
+    }
+
     static func preview(_ ids: [UUID], moving id: UUID, to target: UUID) -> [UUID] {
         guard let source = ids.firstIndex(of: id), let destination = ids.firstIndex(of: target) else { return ids }
         var result = ids
@@ -172,7 +193,8 @@ extension EnvironmentValues {
 
 private final class WeakShelfTarget {
     weak var view: UIView?
-    init(_ view: UIView) { self.view = view }
+    weak var cover: UIView?
+    init(_ view: UIView, cover: UIView) { self.view = view; self.cover = cover }
 }
 
 /// A dedicated touch surface separates tap-to-open from direct dragging.
@@ -180,13 +202,15 @@ struct ReaderShelfDragSource<Content: View>: UIViewRepresentable {
     let id: UUID
     let order: [UUID]
     let state: ReaderShelfDrag
+    let isEnabled: Bool
     let move: (UUID, UUID) -> Void
     let remove: (UUID) -> Void
     let open: () -> Void
     let content: Content
 
-    init(id: UUID, order: [UUID], state: ReaderShelfDrag, move: @escaping (UUID, UUID) -> Void,
+    init(id: UUID, order: [UUID], state: ReaderShelfDrag, isEnabled: Bool, move: @escaping (UUID, UUID) -> Void,
          remove: @escaping (UUID) -> Void, open: @escaping () -> Void, @ViewBuilder content: () -> Content) {
+        self.isEnabled = isEnabled
         self.id = id; self.order = order; self.state = state; self.move = move; self.remove = remove; self.open = open; self.content = content()
     }
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -207,6 +231,7 @@ struct ReaderShelfDragSource<Content: View>: UIViewRepresentable {
             hosted.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
         let pan = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.pan(_:)))
+        pan.isEnabled = isEnabled
         pan.maximumNumberOfTouches = 1
         pan.delegate = context.coordinator
         view.addGestureRecognizer(pan)
@@ -214,13 +239,17 @@ struct ReaderShelfDragSource<Content: View>: UIViewRepresentable {
         let tap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.openBook))
         tap.require(toFail: pan)
         view.addGestureRecognizer(tap)
-        state.register(view, id: id)
+        // SwiftUI owns the outer view's geometry. Animate only its hosted cover,
+        // otherwise a layout update resets the live insertion transforms.
+        state.register(view, id: id, cover: hosted)
         return view
     }
     func updateUIView(_ uiView: ShelfTouchView, context: Context) {
         context.coordinator.parent = self
         context.coordinator.host?.rootView = content
-        state.register(uiView, id: id)
+        uiView.shelfPan?.isEnabled = isEnabled
+        if !isEnabled { context.coordinator.cancel() }
+        state.register(uiView, id: id, cover: context.coordinator.host?.view)
     }
     static func dismantleUIView(_ uiView: ShelfTouchView, coordinator: Coordinator) { coordinator.cancel() }
 
@@ -254,7 +283,9 @@ struct ReaderShelfDragSource<Content: View>: UIViewRepresentable {
         private var visualProximity: CGFloat = 0
         private var lastFrameTime: CFTimeInterval = 0
         init(_ parent: ReaderShelfDragSource) { self.parent = parent }
-        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool { !parent.state.isActive }
+        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            parent.isEnabled && !parent.state.isActive
+        }
         @objc func openBook() { if !parent.state.isActive { parent.open() } }
 
         @objc func pan(_ pan: UIPanGestureRecognizer) {
@@ -262,6 +293,7 @@ struct ReaderShelfDragSource<Content: View>: UIViewRepresentable {
             let point = pan.location(in: window)
             switch pan.state {
             case .began:
+                guard parent.isEnabled else { cancel(); return }
                 let token = UUID()
                 self.token = token
                 visualProximity = 0; lastFrameTime = CACurrentMediaTime()

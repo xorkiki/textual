@@ -85,6 +85,69 @@ struct BookCoverTests {
         #expect(newRequest.url?.query == "default=false")
     }
 
+    @Test func cachedAlternativeDoesNotWaitForASlowPrimaryURL() async {
+        let loader = BookCoverLoader()
+        var cacheChecks: [String] = []
+        let result = await loader.load(urls: [broken, replacement], identity: identity,
+            cachedImageLoader: { url in
+                cacheChecks.append(url)
+                if url == broken { throw URLError(.resourceUnavailable) }
+                return bitmap()
+            }, imageLoader: { _ in
+                Issue.record("A cached alternative must be displayed before starting network downloads")
+                throw URLError(.timedOut)
+            }, replacements: { _ in
+                Issue.record("A saved cover must not require a catalog search")
+                return []
+            })
+        #expect(result == replacement)
+        #expect(cacheChecks == [broken, replacement])
+        #expect(loader.image != nil)
+        #expect(!loader.isLoading)
+    }
+
+    @Test func cacheMissStillDownloadsAndRejectsTinyCachedPlaceholders() async {
+        let loader = BookCoverLoader()
+        var downloads: [String] = []
+        let result = await loader.load(urls: [broken, replacement], identity: identity,
+            cachedImageLoader: { url in
+                if url == broken { return bitmap(1) }
+                throw URLError(.resourceUnavailable)
+            }, imageLoader: { url in
+                downloads.append(url)
+                if url == broken { throw URLError(.fileDoesNotExist) }
+                return bitmap()
+            }, replacements: { _ in [] })
+        #expect(result == replacement)
+        #expect(downloads == [broken, replacement])
+    }
+
+    @Test func resolvingCatalogIdentityDoesNotReloadTheSameCover() async {
+        let loader = BookCoverLoader()
+        _ = await loader.load(urls: [replacement], identity: identity,
+            imageLoader: { _ in bitmap() }, replacements: { _ in [] })
+        let previous = loader.image
+        let updated = BookCoverIdentity(title: identity.title, author: identity.author,
+                                        isbn: identity.isbn, catalogID: "openlibrary:OL1W")
+        let result = await loader.load(urls: [replacement], identity: updated,
+            imageLoader: { _ in
+                Issue.record("Catalog ID updates must not blank or reload a working cover")
+                return bitmap()
+            }, replacements: { _ in [] })
+        #expect(result == replacement)
+        #expect(loader.image === previous)
+    }
+
+    @Test func cacheOnlyUsesTheSameCacheWithoutStartingNetworkRequests() throws {
+        let original = "https://covers.openlibrary.org/b/isbn/9780547773742-M.jpg"
+        let pipeline = ImagePipeline()
+        let oldRequest = try #require(BookCoverImage.imageRequest(original, width: 100, height: 150))
+        let request = try #require(BookCoverImage.imageRequest(original, width: 100, height: 150, cacheOnly: true))
+        #expect(pipeline.cache.makeDataCacheKey(for: request) == pipeline.cache.makeDataCacheKey(for: oldRequest))
+        #expect(request.options.contains(.returnCacheDataDontLoad))
+        #expect(request.url?.query == "default=false")
+    }
+
     @Test func workingCoverNeverSearchesTheCatalog() async {
         let loader = BookCoverLoader()
         let result = await loader.load(urls: [broken], identity: identity, imageLoader: { _ in bitmap() }, replacements: { _ in

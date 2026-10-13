@@ -27,7 +27,7 @@ struct ContentView: View {
         .onOpenURL { url in
             Task { await account.handleOpenURL(url) }
         }
-        .preferredColorScheme(.dark)
+        .textualScreenDefaults()
     }
 }
 
@@ -39,27 +39,32 @@ struct TextualTabView: View {
     let legacyBookCount: Int
     let importLegacy: (() async throws -> Void)?
     @State private var selectedTab: TextualTab = .home
+    @State private var visitedTabs: Set<TextualTab> = [.home]
     @State private var shelfDrag = ReaderShelfDrag()
+    @State private var queueDrag = ReaderShelfDrag()
     @Environment(\.scenePhase) private var scenePhase
-    @Query(filter: #Predicate<Book> { !$0.isRemovedFromLibrary }) private var cachedBooks: [Book]
-
-    private var statsCacheKey: String {
-        cachedBooks.map { "\($0.id)|\($0.isbn)|\($0.title)|\($0.author)|\($0.googleBooksVolumeId ?? "")|\($0.storyGraphData?.hashValue ?? 0)" }.sorted().joined()
-    }
+    @State private var readingLibrary = ReadingLibraryCache()
 
     var body: some View {
         ZStack(alignment: .bottom) {
-            TabView(selection: $selectedTab) {
+            // The custom bar owns all six destinations. A native TabView adds a
+            // More navigation stack after five tabs, including its own header/back button.
+            // Keep visited pages mounted so their navigation and filters survive switching.
+            ZStack {
                 ForEach(TextualTab.allCases) { tab in
-                    destination(for: tab)
-                        .tag(tab)
-                        .tabItem { Label(tab.title, systemImage: tab.symbol) }
-                        .toolbar(.hidden, for: .tabBar)
+                    if tab == selectedTab || visitedTabs.contains(tab) {
+                        destination(for: tab)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .opacity(tab == selectedTab ? 1 : 0)
+                            .allowsHitTesting(tab == selectedTab)
+                            .accessibilityHidden(tab != selectedTab)
+                            .zIndex(tab == selectedTab ? 1 : 0)
+                    }
                 }
             }
-            .toolbar(.hidden, for: .tabBar)
 
             TextualBottomBar(selection: $selectedTab)
+                .environment(\.readerShelfDrag, selectedTab == .library ? queueDrag : shelfDrag)
                 .frame(maxWidth: 440)
                 .padding(.horizontal, TextualNavigationLayout.outerPadding)
                 .padding(.bottom, TextualNavigationLayout.bottomPadding)
@@ -71,15 +76,18 @@ struct TextualTabView: View {
         .ignoresSafeArea(.container, edges: .bottom)
         .background(Color.inkwell)
         .environment(\.readerShelfDrag, shelfDrag)
-        .onChange(of: selectedTab) { _, _ in shelfDrag.cancel() }
-        .onChange(of: scenePhase) { _, phase in if phase != .active { shelfDrag.cancel() } }
-        .onDisappear { shelfDrag.cancel() }
+        .onChange(of: selectedTab) { _, tab in
+            visitedTabs.insert(tab)
+            shelfDrag.cancel()
+            queueDrag.cancel()
+        }
+        .onChange(of: scenePhase) { _, phase in if phase != .active { shelfDrag.cancel(); queueDrag.cancel() } }
+        .onDisappear { shelfDrag.cancel(); queueDrag.cancel() }
         .onOpenURL { url in
-            if ReaderProfileRoute.username(url) != nil { selectedTab = .home }
+            if ReaderProfileRoute.username(url) != nil { selectedTab = .profile }
         }
-        .task(id: statsCacheKey) {
-            await StatsMetadataCache.warm(cachedBooks)
-        }
+        .environment(\.readingLibrary, readingLibrary)
+        .background { ReadingLibraryObserver(cache: readingLibrary) }
     }
 
     @ViewBuilder
@@ -87,15 +95,23 @@ struct TextualTabView: View {
         switch tab {
         case .library:
             LibraryView(repository: repository, bottomNavigationInset: TextualNavigationLayout.bottomExtent)
+                // The same book can appear on both mounted tabs. Keep their drag targets separate.
+                .environment(\.readerShelfDrag, queueDrag)
         case .menu:
             TextualMenuPage(repository: repository, account: account,
                             legacyBookCount: legacyBookCount, importLegacy: importLegacy,
                             openArchive: { selectedTab = .library })
         case .stats:
             TextualStatsPage()
-        case .home:
+        case .profile:
             ReaderProfileView(account: account)
-        case .discover:
+        case .home:
+            NavigationStack {
+                Color.inkwell.ignoresSafeArea()
+                    .textualPageTitle("The Archive")
+            }
+        case .community:
+            // This destination will host followed readers and their feed.
             NavigationStack {
                 Color.inkwell.ignoresSafeArea()
                     .textualPageTitle(tab.title)
@@ -133,55 +149,41 @@ private struct TextualStatsPage: View {
         ReadingStatsFilter(status: category == .read ? "read" : (category == .tbr ? "to-read" : "did-not-finish"), year: selectedYear)
     }
 
-    // Every stats component receives the same filtered library and date scope.
-    private var statsBooks: [Book] {
-        books.filter { book in book.importedReading.map { statsFilter.includes($0) } ?? false }
-    }
-
-    private var recordedYears: [Int] {
-        let dates = books.compactMap(\.importedReading).flatMap { reading -> [Date] in
-            ReadingStatsFilter.completedDates(reading) + [ReadingStatsFilter.date(reading.dateAdded)].compactMap { $0 }
-        }
-        return Set(dates.map { Calendar(identifier: .gregorian).component(.year, from: $0) }).sorted(by: >)
-    }
+    @Environment(\.readingLibrary) private var readingLibrary
+    private var recordedYears: [Int] { readingLibrary?.snapshot.years ?? [] }
 
     var body: some View {
         NavigationStack {
             ZStack(alignment: .topLeading) {
                 Color.inkwell.ignoresSafeArea()
                 ScrollView {
-                    ReadingStatsCharts(books: statsBooks, filter: statsFilter)
-                    .padding(.horizontal, 24)
+                    CachedReadingStatsCharts(books: books, filter: statsFilter)
+                    .padding(.horizontal, TextualLayout.pageInset)
                     .padding(.top, 12)
                     .padding(.bottom, TextualNavigationLayout.bottomExtent + 24)
                 }
                 .scrollIndicators(.hidden)
-                .textualPageHeader(compact: true) {
-                    HStack(spacing: 10) {
-                        Text("STATS")
-                            .font(.custom("CormorantGaramond-Regular", size: 28))
-                            .foregroundStyle(Color.paper)
-                            .accessibilityAddTraits(.isHeader)
-                        Spacer(minLength: 8)
-                        TextualDropdown(label: "Reading status", title: category.title,
-                            options: StatsCategory.allCases.map {
-                                TextualDropdownOption(value: $0, title: $0.title, accessibilityTitle: $0.accessibleTitle)
-                            }, selection: $category)
-                            .accessibilityIdentifier("stats.category")
-                        TextualDropdown(label: "Time period", title: selectedYear.map(String.init) ?? "All time",
-                            options: [TextualDropdownOption(value: Int?.none, title: "All time")]
-                                + recordedYears.map { TextualDropdownOption(value: Optional($0), title: String($0)) },
-                            selection: $selectedYear)
-                            .accessibilityIdentifier("stats.period")
+                .textualPageHeader {
+                    TextualHeader(title: "STATS") {
+                        HStack(spacing: TextualLayout.itemGap) {
+                            TextualDropdown(label: "Reading status", title: category.title,
+                                options: StatsCategory.allCases.map {
+                                    TextualDropdownOption(value: $0, title: $0.title, accessibilityTitle: $0.accessibleTitle)
+                                }, selection: $category)
+                                .accessibilityIdentifier("stats.category")
+                            TextualDropdown(label: "Time period", title: selectedYear.map(String.init) ?? "All time",
+                                options: [TextualDropdownOption(value: Int?.none, title: "All time")]
+                                    + recordedYears.map { TextualDropdownOption(value: Optional($0), title: String($0)) },
+                                selection: $selectedYear)
+                                .accessibilityIdentifier("stats.period")
+                        }
                     }
-                    .buttonStyle(.plain)
-                    .padding(.horizontal, 24)
                 }
             }
             .textualDropdownHost()
             .toolbar(.hidden, for: .navigationBar)
             .onChange(of: recordedYears) { _, years in
-                if let selectedYear, !years.contains(selectedYear) { self.selectedYear = nil }
+                if readingLibrary?.isReady == true, let selectedYear, !years.contains(selectedYear) { self.selectedYear = nil }
             }
         }
     }
@@ -189,35 +191,22 @@ private struct TextualStatsPage: View {
 
 }
 
-enum TextualNavigationLayout {
-    static let itemHeight: CGFloat = 44
-    static let innerPadding: CGFloat = 6
-    static let outerPadding: CGFloat = 24
-    static let bottomPadding: CGFloat = 12
-    static var bottomExtent: CGFloat { itemHeight + innerPadding * 2 + bottomPadding }
-}
-
 enum TextualTab: String, CaseIterable, Identifiable {
-    case home, library, discover, stats, menu
+    case profile, library, stats, home, community, menu
 
     var id: String { rawValue }
-    var title: String {
+    var title: String { self == .library ? "My Archive" : rawValue.capitalized }
+    var icon: DesignSystemIcon {
         switch self {
-        case .home: return "Profile"
-        case .library: return "My Archive"
-        case .discover: return "The Archive"
-        default: return rawValue.capitalized
+        case .profile: return .profile
+        case .stats: return .stats
+        case .library: return .archive
+        case .home: return .home
+        case .community: return .people
+        case .menu: return .menu
         }
     }
-    var symbol: String {
-        switch self {
-        case .home: return "person.crop.circle"
-        case .library: return "books.vertical"
-        case .discover: return "safari"
-        case .stats: return "chart.bar"
-        case .menu: return "line.3.horizontal"
-        }
-    }
+
 }
 
 private struct TextualBottomBar: View {
@@ -237,8 +226,7 @@ private struct TextualBottomBar: View {
                     .allowsHitTesting(!dragging)
                     .accessibilityHidden(dragging)
                 if dragging, let shelfDrag {
-                    Image(systemName: "trash")
-                        .font(.system(size: 23, weight: .regular))
+                    DesignSystemIconView(.remove, size: TextualIconStyle.navigation.size)
                         .foregroundStyle(shelfDrag.isOverTrash ? Color.paper : Color.ghost)
                         .transition(.opacity.combined(with: .scale(scale: reduceMotion ? 1 : 0.6)))
                         .accessibilityHidden(true)
@@ -252,7 +240,7 @@ private struct TextualBottomBar: View {
             .frame(width: dragging ? 56 : geometry.size.width, height: 56)
             .background {
                 Capsule()
-                    .fill(dragging && shelfDrag?.isOverTrash == true ? Color.bloodletter : Color.velvet.opacity(0.35))
+                    .fill(dragging && shelfDrag?.isOverTrash == true ? Color.bloodletter : Color.controlSurface)
                     .animation(.easeInOut(duration: 0.16), value: dragging && shelfDrag?.isOverTrash == true)
             }
             .clipShape(Capsule())
@@ -288,20 +276,10 @@ private struct TextualBottomBar: View {
         .padding(TextualNavigationLayout.innerPadding)
     }
 
-    @ViewBuilder
     private func tabIcon(_ tab: TextualTab) -> some View {
-        switch tab {
-        case .home:
-            Image(designSystemIcon: .profile)
-                .renderingMode(.template).resizable().scaledToFit()
-        case .menu:
-            Image(designSystemIcon: .menu)
-                .renderingMode(.template).resizable().scaledToFit()
-        default:
-            Image(systemName: tab.symbol)
-                .font(.system(size: 23, weight: .regular))
-        }
+        DesignSystemIconView(tab.icon)
     }
+
 }
 
 /// Existing account tools remain reachable while the rest of Menu is still unbuilt.
@@ -311,6 +289,7 @@ private struct TextualMenuPage: View {
     let legacyBookCount: Int
     let importLegacy: (() async throws -> Void)?
     let openArchive: () -> Void
+    @State private var openArchiveAfterImport = false
     @State private var showImport = false
     @State private var showAccount = false
     @State private var confirmImport = false
@@ -330,15 +309,21 @@ private struct TextualMenuPage: View {
                         Divider().overlay(Color.velvet)
                     }
                     .frame(maxWidth: 480)
-                    .padding(28)
+                    .padding(TextualLayout.pageInset)
                     .padding(.bottom, TextualNavigationLayout.bottomExtent)
                     .frame(maxWidth: .infinity)
                 }
                 .scrollIndicators(.hidden)
             }
             .textualPageTitle("Menu")
-            .sheet(isPresented: $showImport) {
-                StoryGraphImportView(repository: repository, accountEmail: account.email, openArchive: openArchive)
+            .sheet(isPresented: $showImport, onDismiss: {
+                if openArchiveAfterImport {
+                    openArchiveAfterImport = false
+                    openArchive()
+                }
+            }) {
+                StoryGraphImportView(repository: repository, accountEmail: account.email,
+                                     openArchive: { openArchiveAfterImport = true })
             }
             .sheet(isPresented: $showAccount) {
                 VStack(spacing: 0) {
@@ -352,6 +337,7 @@ private struct TextualMenuPage: View {
                     AccountView(session: account)
                 }
                 .background(Color.inkwell)
+                .presentationBackground(Color.inkwell)
                 .preferredColorScheme(.dark)
                 .confirmationDialog("Import the device library into this account?", isPresented: $confirmImport) {
                     Button("Import books") {
@@ -379,26 +365,11 @@ private struct TextualMenuPage: View {
     private func menuRow(_ title: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(title)
-                .font(.custom("PlusJakartaSans-Regular", size: 16, relativeTo: .body))
+                .font(.designSystem(.bodyMedium))
                 .foregroundStyle(Color.paper)
                 .frame(maxWidth: .infinity, minHeight: 60, alignment: .leading)
                 .contentShape(Rectangle())
         }.buttonStyle(.plain)
     }
 
-}
-
-private extension View {
-    func textualPageTitle(_ title: String) -> some View {
-        self
-            .toolbar(.hidden, for: .navigationBar)
-            .textualPageHeader {
-                Text(title.uppercased())
-                    .font(.custom("CormorantGaramond-Regular", size: 28, relativeTo: .title2))
-                    .foregroundStyle(Color.paper)
-                    .accessibilityAddTraits(.isHeader)
-                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                    .padding(.horizontal, 24)
-            }
-    }
 }

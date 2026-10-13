@@ -1,4 +1,6 @@
 import Foundation
+import SwiftUI
+import UIKit
 import Testing
 @testable import textual
 
@@ -61,5 +63,31 @@ struct BookDetailDisplayIntegrationTests {
             #expect(!model.categories(from: volume).contains("General"))
         }
         #expect(book.cachedCatalogMetadata == data)
+    }
+}
+
+
+@MainActor
+struct CatalogDescriptionRenderingTests {
+    @Test func rendersParagraphsLineBreaksAndEntitiesWithoutAWebRenderer() {
+        let rendered = AttributedString(html: "<p>A &amp; B<br>Second line</p><p>It&#8217;s &#x1F4DA; time.</p>", font: .bodyMedium)
+        #expect(String(rendered.characters) == "A & B\nSecond line\n\nIt’s 📚 time.")
+    }
+
+    @Test func preservesPlainTextParagraphsAndIgnoresEmbeddedResources() {
+        let plain = "A plain synopsis.\n\nA second paragraph."
+        #expect(String(AttributedString(html: plain).characters) == plain)
+        let html = "<p>Visible</p><script>hidden()</script><style>body { color: red; }</style><!-- hidden --><img src='https://example.com/image'><p>Also visible</p>"
+        #expect(String(AttributedString(html: html).characters) == "Visible\n\nAlso visible")
+        #expect(String(AttributedString(html: "<ul><li>First</li><li>Second</li></ul>").characters) == "• First\n• Second")
+    }
+
+    @Test func preservesEmphasisAndDecodesEntitiesOnlyOnce() {
+        let rendered = NSAttributedString(AttributedString(html: "<b>Bold</b> <i>Italic</i> &amp;lt;"))
+        #expect(rendered.string == "Bold Italic &lt;")
+        let bold = rendered.attribute(.font, at: 0, effectiveRange: nil) as? UIFont
+        let italic = rendered.attribute(.font, at: 5, effectiveRange: nil) as? UIFont
+        #expect(bold?.fontDescriptor.symbolicTraits.contains(.traitBold) == true)
+        #expect(italic?.fontDescriptor.symbolicTraits.contains(.traitItalic) == true)
     }
 }

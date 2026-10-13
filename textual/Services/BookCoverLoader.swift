@@ -55,15 +55,17 @@ final class BookCoverLoader {
     private(set) var isLoading = false
     private var generation = UUID()
     private var loadedURL: String?
-    private var loadedIdentity: BookCoverIdentity?
 
     func load(urls: [String], identity: BookCoverIdentity?,
+              cachedImageLoader: ((String) async throws -> UIImage)? = nil,
               imageLoader: (String) async throws -> UIImage,
               replacements: (BookCoverIdentity) async throws -> [String],
               secondaryReplacements: ((BookCoverIdentity) async throws -> [String])? = nil) async -> String? {
         // SwiftData metadata updates can reorder or append candidate URLs. Keep
         // the displayed image when it is still one of the book's valid candidates.
-        if !Task.isCancelled, image != nil, loadedIdentity == identity, let loadedURL,
+        guard !Task.isCancelled else { return nil }
+        // An unchanged image URL remains valid when catalog metadata fills in.
+        if image != nil, let loadedURL,
            urls.compactMap(BookCoverURL.normalized).contains(loadedURL) { return loadedURL }
         let run = UUID()
         generation = run
@@ -71,21 +73,24 @@ final class BookCoverLoader {
         isLoading = true
         defer { if generation == run { isLoading = false } }
         var attempted = Set<String>()
+        var checkedCache = Set<String>()
 
-        func attempt(_ candidates: [String]) async throws -> String? {
+        func attempt(_ candidates: [String], using readImage: (String) async throws -> UIImage,
+                     cacheOnly: Bool = false) async throws -> String? {
             for candidate in candidates {
                 try Task.checkCancellation()
                 guard generation == run else { throw CancellationError() }
-                guard let url = BookCoverURL.normalized(candidate), attempted.insert(url).inserted else { continue }
+                guard let url = BookCoverURL.normalized(candidate) else { continue }
+                let isNew = cacheOnly ? checkedCache.insert(url).inserted : attempted.insert(url).inserted
+                guard isNew else { continue }
                 do {
-                    let loaded = try await imageLoader(url)
+                    let loaded = try await readImage(url)
                     try Task.checkCancellation()
                     guard generation == run else { throw CancellationError() }
                     // Open Library's historical missing-cover response is a tiny bitmap.
                     guard loaded.size.width > 8, loaded.size.height > 8 else { continue }
                     image = loaded
                     loadedURL = url
-                    loadedIdentity = identity
                     return url
                 } catch {
                     try Task.checkCancellation()
@@ -95,16 +100,26 @@ final class BookCoverLoader {
             return nil
         }
 
+        func loadCandidates(_ candidates: [String]) async throws -> String? {
+            // Check every known URL on disk before any one URL can wait on the network.
+            // Nuke performs the disk read and image decoding off the main thread.
+            if let cachedImageLoader,
+               let working = try await attempt(candidates, using: cachedImageLoader, cacheOnly: true) {
+                return working
+            }
+            return try await attempt(candidates, using: imageLoader)
+        }
+
         do {
-            if let working = try await attempt(urls) { return working }
+            if let working = try await loadCandidates(urls) { return working }
             guard let identity else { return nil }
             try Task.checkCancellation()
             let candidates = try await replacements(identity)
-            if let working = try await attempt(Array(candidates.prefix(6))) { return working }
+            if let working = try await loadCandidates(Array(candidates.prefix(6))) { return working }
             try Task.checkCancellation()
             guard let secondaryReplacements else { return nil }
             let secondary = try await secondaryReplacements(identity)
-            return try await attempt(Array(secondary.prefix(6)))
+            return try await loadCandidates(Array(secondary.prefix(6)))
         } catch { return nil }
     }
 }

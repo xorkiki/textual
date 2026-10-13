@@ -19,9 +19,11 @@ struct AccountLibraryHost: View {
                                legacyBookCount: store.legacyBookCount,
                                importLegacy: { try await store.importLegacyLibrary() })
                     .modelContainer(store.container)
+                    .environment(\.readerReviews, store.reviews)
+                    .environment(\.reviewLibraryRepository, store.repository)
             } else if let openError {
                 ContentUnavailableView {
-                    Label("Library unavailable", systemImage: "exclamationmark.circle")
+                    Label("Library unavailable", textualIcon: .warning)
                 } description: {
                     Text(openError)
                 } actions: {
@@ -93,7 +95,10 @@ final class AccountLibraryStore {
         container = try ModelContainer(for: schema, configurations: [configuration])
         repository = LibraryRepository(client: client, userID: userID, modelContext: container.mainContext)
         reviews = ReaderReviewStore(userID: userID, context: container.mainContext,
-            transport: SupabaseReaderReviewTransport(client: client))
+            transport: SupabaseReaderReviewTransport(client: client), repository: repository)
+        repository.afterSynchronization = { [weak reviews] in
+            try? await reviews?.flush()
+        }
         if defaults.string(forKey: importMarker) == nil {
             legacyBookCount = try legacyContainer.mainContext.fetchCount(FetchDescriptor<Book>(
                 predicate: #Predicate<Book> { !$0.isRemovedFromLibrary }))
@@ -142,23 +147,21 @@ struct LibraryConflictsView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 24) {
                     Text("Choose which change to keep. Your local version stays saved until you choose.")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.ghost)
                     ForEach(conflicts) { book in
                         VStack(alignment: .leading, spacing: 12) {
-                            Text(book.title).font(.headline)
+                            Text(book.title).font(.designSystem(.uiButton))
                             Text(book.isRemovedFromLibrary ? "This iPhone removed the book." : "This iPhone saved or changed the book.")
                             Button("Keep this iPhone’s change") { resolve(book, keepLocal: true) }
                             Button("Use synced version") { resolve(book, keepLocal: false) }
                         }
                     }
                     if conflicts.isEmpty { Text("All changes are resolved.") }
-                    if let errorMessage { Text(errorMessage).foregroundStyle(.red) }
+                    if let errorMessage { Text(errorMessage).foregroundStyle(Color.errorText) }
                 }
                 .padding()
             }
-            .navigationTitle("Review changes")
-            .textualNavigationChrome()
-            .toolbar { Button("Done") { dismiss() } }
+            .textualSheetHeader("Review changes") { dismiss() }
         }
         .preferredColorScheme(.dark)
     }

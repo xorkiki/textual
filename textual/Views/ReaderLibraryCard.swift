@@ -15,10 +15,10 @@ struct ReaderLibraryCard: View {
             VStack(alignment: .leading, spacing: 10 * scale) {
                 HStack(alignment: .firstTextBaseline, spacing: 10 * scale) {
                     Text("TEXTUAL")
-                        .font(.custom("CormorantGaramond-Regular", fixedSize: 28 * scale))
+                        .font(ReaderCardTypography.brand.font(scale: scale))
                     Spacer(minLength: 0)
                     Text("Library Card")
-                        .font(.custom("CormorantGaramond-SemiBold", fixedSize: 29 * scale))
+                        .font(ReaderCardTypography.title.font(scale: scale))
                         .lineLimit(1).minimumScaleFactor(0.7)
                 }
                 HStack(alignment: .top, spacing: 14 * scale) {
@@ -28,7 +28,7 @@ struct ReaderLibraryCard: View {
                     .frame(width: 74 * scale, height: 92 * scale)
                     VStack(alignment: .leading, spacing: 12 * scale) {
                         Text(firstName)
-                            .font(.custom("CormorantGaramond-Regular", fixedSize: 31 * scale))
+                            .font(ReaderCardTypography.name.font(scale: scale))
                             .lineLimit(1).minimumScaleFactor(0.45)
                             .frame(maxWidth: .infinity, alignment: .leading)
                         HStack(spacing: 12 * scale) {
@@ -40,7 +40,7 @@ struct ReaderLibraryCard: View {
                     .frame(height: 92 * scale, alignment: .center)
                 }
                 Text(content.sentence)
-                    .font(.custom("CormorantGaramond-Regular", fixedSize: 15.5 * scale))
+                    .font(ReaderCardTypography.sentence.font(scale: scale))
                     .foregroundStyle(Color.paper.opacity(0.9))
                     .lineLimit(3).minimumScaleFactor(0.75)
                     .frame(maxWidth: .infinity, minHeight: 41 * scale, maxHeight: 41 * scale, alignment: .leading)
@@ -49,7 +49,7 @@ struct ReaderLibraryCard: View {
             .foregroundStyle(Color.paper)
             .padding(16 * scale)
             .frame(width: geometry.size.width, height: geometry.size.height)
-            .background(Color.moss.opacity(0.3), in: RoundedRectangle(cornerRadius: 12))
+            .background(Color.readerCardSurface, in: RoundedRectangle(cornerRadius: TextualLayout.cardRadius))
         }
         .aspectRatio(1.586, contentMode: .fit)
         .accessibilityElement(children: .contain)
@@ -58,9 +58,9 @@ struct ReaderLibraryCard: View {
 
     private func stat(_ count: Int, _ label: String, scale: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text(count.formatted()).font(.custom("CormorantGaramond-Regular", fixedSize: 23 * scale))
+            Text(count.formatted()).font(ReaderCardTypography.count.font(scale: scale))
                 .lineLimit(1).minimumScaleFactor(0.6)
-            Text(label).font(.custom("PlusJakartaSans-Regular", fixedSize: 7 * scale))
+            Text(label).font(ReaderCardTypography.label.font(scale: scale))
                 .tracking(0.5 * scale)
                 .foregroundStyle(Color.paper.opacity(0.75))
         }
@@ -133,11 +133,11 @@ private struct ReaderCardAvatar: View {
                 } else if choosePhoto != nil {
                     RoundedRectangle(cornerRadius: 10 * scale)
                         .strokeBorder(Color.ghost.opacity(0.4), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
-                    Image(systemName: "plus")
-                        .font(.system(size: 23 * scale, weight: .light)).foregroundStyle(Color.ghost)
+                    DesignSystemIconView(.add, size: TextualIconStyle.shelfAdd.size * scale)
+                        .foregroundStyle(Color.ghost)
                 } else {
                     Text(String(firstName.prefix(1)).lowercased())
-                        .font(.custom("CormorantGaramond-Regular", fixedSize: 64 * scale))
+                        .font(ReaderCardTypography.monogram.font(scale: scale))
                         .foregroundStyle(Color.paper.opacity(0.8))
                 }
             }
@@ -153,7 +153,15 @@ private struct ReaderCardAvatar: View {
 }
 
 struct ReaderBookshelf: View {
+    enum Kind {
+        case favorites, upNext
+        var prefix: String { self == .favorites ? "profile" : "upNext" }
+        var addLabel: String { self == .favorites ? "Add books to your shelf" : "Add a book to Up Next" }
+        var addHint: String { self == .favorites ? "Choose favorites from your archive" : "Choose from your archive" }
+        var removeLabel: String { self == .favorites ? "Remove from shelf" : "Remove from Up Next" }
+    }
     let readerName: String
+    var kind: Kind = .favorites
     let favorites: [ReaderFavorite]
     var isOwner = false
     var add: (() -> Void)?
@@ -164,19 +172,40 @@ struct ReaderBookshelf: View {
     @Environment(\.readerShelfDrag) private var shelfDrag
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private var showsAddTile: Bool { isOwner && favorites.count < ReaderShelf.limit }
+    @State private var isEditing = false
+
+    private var showsAddTile: Bool { isOwner && (kind == .upNext || favorites.count < ReaderShelf.limit) }
     private var rowCount: Int { (favorites.count + (showsAddTile ? 1 : 0) + 2) / 3 }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            Text("\(readerName)’s book shelf")
-                .font(.custom("CormorantGaramond-Regular", size: 28, relativeTo: .title2))
-                .foregroundStyle(Color.paper)
+            HStack(spacing: TextualLayout.itemGap) {
+                TextualHeading(title: kind == .upNext ? "Reading order" : "\(readerName)’s book shelf")
+                Spacer(minLength: 0)
+                if isOwner {
+                    Button { isEditing.toggle() } label: {
+                        DesignSystemIconView(isEditing ? .checkmark : .edit, size: TextualIconStyle.compact.size)
+                    }
+                        .buttonStyle(IconButtonStyle())
+                        .disabled(favorites.isEmpty || shelfDrag?.isActive == true)
+                        .accessibilityLabel(isEditing ? "Done editing shelf" : "Edit shelf order")
+                        .accessibilityValue(isEditing ? "Editing" : "Locked")
+                        .accessibilityHint(isEditing ? "Locks the shelf order" : "Enables dragging books to rearrange your shelf")
+                        .accessibilityIdentifier("\(kind.prefix).editShelf")
+                }
+            }
             shelfGrid
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("profile.bookshelf")
+        .accessibilityIdentifier("\(kind.prefix).bookshelf")
+        .onDisappear {
+            isEditing = false
+            if isOwner { shelfDrag?.cancel() }
+        }
+        .onChange(of: favorites.isEmpty) { _, isEmpty in
+            if isEmpty { isEditing = false }
+        }
         .animation(reduceMotion ? .easeInOut(duration: 0.15) : .spring(response: 0.38, dampingFraction: 0.86), value: favorites.map(\.id))
     }
 
@@ -213,23 +242,22 @@ struct ReaderBookshelf: View {
 
     private func addTile(width: CGFloat) -> some View {
         Button { add?() } label: {
-            RoundedRectangle(cornerRadius: 8)
+            RoundedRectangle(cornerRadius: TextualLayout.coverRadius)
                 .fill(Color.velvet.opacity(0.4))
                 .overlay {
-                    RoundedRectangle(cornerRadius: 8)
+                    RoundedRectangle(cornerRadius: TextualLayout.coverRadius)
                         .strokeBorder(Color.ghost.opacity(0.4), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
                 }
                 .overlay {
-                    Image(systemName: "plus")
-                        .font(.system(size: 23, weight: .light))
+                    DesignSystemIconView(.add, size: TextualIconStyle.shelfAdd.size)
                         .foregroundStyle(Color.ghost)
                 }
                 .frame(width: width, height: min(170, width * 1.55))
-                .contentShape(RoundedRectangle(cornerRadius: 8))
+                .contentShape(RoundedRectangle(cornerRadius: TextualLayout.coverRadius))
         }
-        .accessibilityLabel("Add books to your shelf")
-        .accessibilityHint("Choose favorites from your archive")
-        .accessibilityIdentifier("profile.addFavorites")
+        .accessibilityLabel(kind.addLabel)
+        .accessibilityHint(kind.addHint)
+        .accessibilityIdentifier("\(kind.prefix).addFavorites")
     }
 
     @ViewBuilder
@@ -243,28 +271,32 @@ struct ReaderBookshelf: View {
                 .shadow(color: .black.opacity(0.4), radius: 4, x: 2, y: 2)
         }
         .accessibilityLabel("\(favorite.title), by \(favorite.author)")
-        .accessibilityHint(isOwner ? "Opens book details. Drag to reorder, or use actions to move or remove." : "Opens book details")
-        .accessibilityIdentifier("profile.favorite.\(favorite.id)")
+        .accessibilityHint("Opens book details")
+        .accessibilityIdentifier("\(kind.prefix).favorite.\(favorite.id)")
 
         if isOwner, let shelfDrag {
-            ReaderShelfDragSource(id: favorite.id, order: favorites.map(\.id), state: shelfDrag,
+            ReaderShelfDragSource(id: favorite.id, order: favorites.map(\.id), state: shelfDrag, isEnabled: isEditing,
                                   move: { move?($0, $1) }, remove: { remove?($0) }, open: { open(favorite) }) { cover }
                 .frame(width: width, height: height)
                 .opacity(shelfDrag.bookID == favorite.id ? 0 : 1)
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel("\(favorite.title), by \(favorite.author)")
-                .accessibilityHint("Drag to reorder or drop on the trash. Double tap for details.")
+                .accessibilityHint(isEditing ? "Drag to reorder or drop on the trash. Double tap for details." : "Opens book details. Select Edit shelf order to rearrange books.")
                 .accessibilityAddTraits(.isButton)
-                .accessibilityIdentifier("profile.favorite.\(favorite.id)")
+                .accessibilityIdentifier("\(kind.prefix).favorite.\(favorite.id)")
                 .accessibilityAction { open(favorite) }
-                .accessibilityAction(named: "Move earlier") { moveBy(-1, favorite) }
-                .accessibilityAction(named: "Move later") { moveBy(1, favorite) }
-                .accessibilityAction(named: "Remove from shelf") { remove?(favorite.id) }
+                .accessibilityActions {
+                    if isEditing {
+                        Button("Move earlier") { moveBy(-1, favorite) }
+                        Button("Move later") { moveBy(1, favorite) }
+                        Button(kind.removeLabel) { remove?(favorite.id) }
+                    }
+                }
         } else { cover }
     }
 
     private func moveBy(_ offset: Int, _ favorite: ReaderFavorite) {
-        guard let index = favorites.firstIndex(where: { $0.id == favorite.id }),
+        guard isOwner, isEditing, let index = favorites.firstIndex(where: { $0.id == favorite.id }),
               favorites.indices.contains(index + offset) else { return }
         move?(favorite.id, favorites[index + offset].id)
     }

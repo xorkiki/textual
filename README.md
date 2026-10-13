@@ -244,8 +244,10 @@ pace. Fewer than three distinct completed books gets a judgment-pending line; mi
 metadata is never treated as a known preference. It does not infer actual reading times.
 
 Readers choose up to 15 favorites from My Archive. Only covers appear on the shelf;
-tapping opens catalog details. Drag a cover onto another to reorder, or use the context
-menu / VoiceOver actions to move earlier, move later, or remove. Changes persist in an
+tapping opens catalog details. Tap the pencil beside the shelf title to enable editing,
+then drag a cover to reorder or onto the trash to remove it. VoiceOver move/remove actions
+are available while editing. Tap the checkmark to lock the shelf again; leaving the
+profile also exits editing. Changes persist in an
 account-local SwiftData draft, retry on foreground, pull to refresh, or Try again, and
 use revision checks to avoid silently overwriting another device’s changes.
 
@@ -296,9 +298,46 @@ This setup script has passed local permission and repeat-application tests; it h
 not yet been executed against the live project because dashboard access is blocked.
 
 
-## Review and community-data foundation
+## Reviews
 
-See [review architecture](docs/review-architecture.md) for the account-local draft/outbox,
-owner-private review records, opt-in community summaries, verified edition links,
-and next review-flow integration steps. Migration `007_reader_reviews.sql` is prepared
-and tested locally, **not deployed**. Existing imports are not automatically shared.
+Book detail includes Your review with a reusable create/edit sheet. Readers can save
+quarter-star ratings, prose, or both, flag spoilers, and continue account-local drafts.
+My Archive → My reviews lists saved reviews and drafts with title/author search. Explicit
+saves use the account-scoped retry outbox; conflicts require a choice instead of silently
+overwriting another device. Removing a review leaves the book in the archive.
+
+See [review architecture](docs/review-architecture.md) for ownership, sync, and reuse.
+Migrations `007_reader_reviews.sql` and `008_catalog_owned_classification.sql` passed
+40 isolated database checks and were deployed to production with explicit user approval
+on October 12, 2026. Live checks confirmed the read/save endpoints, row-level security,
+and owner-only access. Imported ratings and review text appear in My reviews and book details, and prefill
+the editor. Native saves and withdrawals take precedence; source import data remains intact.
+
+
+### Public catalog classification
+
+Classification lookup version 4 enriches verified Google search candidates from their
+volume detail records, retaining both `categories` and `mainCategory`. Open Library
+fallback uses the exact ISBN edition’s subjects and linked works before title/author
+search, and retains search subjects when work details are unavailable. Sparse works
+also check one cached page of up to 20 sibling editions, accepting subjects only from
+entries that explicitly link back to the verified work. Conflicting editions remain
+unresolved, and sibling page counts are never used. Unclassified completed books are
+processed before already-classified reads and unread books. Audience-only
+labels do not stop genre enrichment. Detail requests are bounded and use the shared
+background rate limiter. ISBN validation and title/author checks prevent unrelated
+results from supplying genres; page counts still require the exact edition.
+
+Existing caches refresh once after the version change. Successful empty lookups use
+a daily backoff; outages remain retryable on the next account warmup, and a failed or
+skipped Google lookup is not recorded as successfully checked. Partial refreshes
+preserve prior verified evidence. These rules apply to every account and contain no
+book-specific overrides. Unavailable or conflicting evidence remains unclassified.
+
+
+Genres and fiction/nonfiction are catalog-owned data, not review questions or community votes.
+Migration `008_catalog_owned_classification.sql` updates the review foundation after 007,
+accepts review submissions without genre fields, hides legacy classification answers from
+review responses and summaries, and exposes only mood terms to the review picker. It is
+deployed with 007 as of October 12, 2026. The app also refreshes
+incomplete public classifications using verified Google Books and Open Library matches.

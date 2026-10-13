@@ -1,6 +1,6 @@
 import SwiftUI
 
-struct GenreStat: Identifiable {
+struct GenreStat: Identifiable, Sendable {
     let name: String
     var count: Int
     var id: String { name }
@@ -70,11 +70,11 @@ struct GenreStatsChart: View {
         let values = genres
         VStack(alignment: .leading, spacing: 24) {
             Text("Genres")
-                .font(.custom("CormorantGaramond-Regular", size: 26, relativeTo: .title2))
+                .font(.designSystem(.sectionHeading))
                 .foregroundStyle(Color.paper)
             if values.isEmpty {
                 Text("No genres available for this selection yet.")
-                    .font(.custom("PlusJakartaSans-Regular", size: 14, relativeTo: .body))
+                    .font(.designSystem(.bodySmall))
                     .foregroundStyle(Color.ghost)
                     .frame(maxWidth: .infinity, minHeight: 260)
             } else {
@@ -96,7 +96,7 @@ private struct GenreBarChart: View {
                 Button { onSelect(genre.name) } label: {
                     HStack(spacing: 12) {
                         Text(genre.name)
-                            .font(.custom("PlusJakartaSans-Regular", size: 12, relativeTo: .caption))
+                            .font(.designSystem(.uiLabel))
                             .foregroundStyle(Color.paper)
                             .frame(width: 104, alignment: .leading)
                             .fixedSize(horizontal: false, vertical: true)
@@ -111,7 +111,7 @@ private struct GenreBarChart: View {
                         }
                         .frame(height: 16)
                         Text(genre.count.formatted())
-                            .font(.custom("PlusJakartaSans-Regular", size: 12, relativeTo: .caption))
+                            .font(.designSystem(.uiLabel))
                             .monospacedDigit()
                             .foregroundStyle(Color.ghost)
                             .frame(minWidth: 26, alignment: .trailing)

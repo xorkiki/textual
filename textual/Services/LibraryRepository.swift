@@ -162,6 +162,7 @@ final class LibraryRepository {
     @ObservationIgnored private let transport: any LibrarySyncTransport
     @ObservationIgnored private var syncTask: Task<Void, Never>?
     @ObservationIgnored private var networkMonitor: NWPathMonitor?
+    @ObservationIgnored var afterSynchronization: (@MainActor () async -> Void)?
     @ObservationIgnored private var active = true
     @ObservationIgnored private var generation = UUID()
 
@@ -202,11 +203,12 @@ final class LibraryRepository {
     }
 
     @discardableResult
-    func add(_ book: Book) throws -> Book {
+    func add(_ book: Book, status: BookAddStatus? = nil) throws -> Book {
         try requireActive()
         let identity = try snapshot(for: book).catalogID
         if let existing = try allBooks().first(where: { $0.googleBooksVolumeId == identity }) {
             if existing.isRemovedFromLibrary {
+                if let status { try BookReadingActions.prepareArchiveStatus(status, for: existing) }
                 existing.isRemovedFromLibrary = false
                 existing.title = book.title
                 existing.author = book.author
@@ -219,6 +221,7 @@ final class LibraryRepository {
         if let context = book.modelContext, context !== modelContext {
             throw LibraryRepositoryError.wrongContext
         }
+        if let status { try BookReadingActions.prepareArchiveStatus(status, for: book) }
         if book.modelContext == nil { modelContext.insert(book) }
         book.isRemovedFromLibrary = false
         try save(book)
@@ -393,7 +396,10 @@ final class LibraryRepository {
         } onCancel: {
             task.cancel()
         }
-        if generation == run { syncTask = nil }
+        if generation == run {
+            syncTask = nil
+            if active { await afterSynchronization?() }
+        }
     }
 
     private func runSynchronization(generation run: UUID) async {
@@ -408,9 +414,11 @@ final class LibraryRepository {
                     throw LibraryRepositoryError.accountChanged
                 }
                 try checkRun(run)
-                let pendingBooks = try allBooks().filter {
+                var pendingQuery = FetchDescriptor<Book>(predicate: #Predicate {
                     $0.pendingOperationID != nil && $0.syncConflictData == nil
-                }.prefix(50)
+                })
+                pendingQuery.fetchLimit = 50
+                let pendingBooks = try modelContext.fetch(pendingQuery)
                 var changes: [LibraryChange] = []
                 var submitted: [UUID: Book] = [:]
                 var batchBytes = 0
@@ -447,17 +455,23 @@ final class LibraryRepository {
                     }
                     try acknowledge(result, for: book)
                 }
-                var localBooks = try allBooks()
-                for entry in response.entries {
-                    try merge(entry, books: &localBooks)
+                if !response.entries.isEmpty {
+                    var index = MergeIndex(try allBooks())
+                    for entry in response.entries {
+                        try merge(entry, index: &index)
+                    }
                 }
                 checkpoint.revision = response.nextRevision
                 // A failed save must never advance the persisted pull cursor.
                 try commit()
-                let books = try allBooks()
-                let hasPending = books.contains { $0.pendingOperationID != nil && $0.syncConflictData == nil }
+                await Task.yield()
+                try checkRun(run)
+                pendingQuery.fetchLimit = 1
+                let hasPending = try !modelContext.fetch(pendingQuery).isEmpty
                 if !response.hasMore && !hasPending {
-                    if books.contains(where: { $0.syncConflictData != nil }) {
+                    var conflicts = FetchDescriptor<Book>(predicate: #Predicate { $0.syncConflictData != nil })
+                    conflicts.fetchLimit = 1
+                    if try !modelContext.fetch(conflicts).isEmpty {
                         showConflict()
                     } else {
                         syncState = .idle
@@ -509,28 +523,51 @@ final class LibraryRepository {
         }
     }
 
-    private func merge(_ remote: RemoteLibraryEntry, books: inout [Book]) throws {
-        if let local = books.first(where: {
-            $0.serverEntryID == remote.id || $0.id == remote.id ||
-            $0.canonicalBookID == remote.bookID || $0.googleBooksVolumeId == remote.book.catalogID
-        }) {
+    /// All aliases preserve the original first-match behavior, including duplicate catalog IDs.
+    private struct MergeIndex {
+        var matches: [String: [Book]] = [:]
+        var aliases: [UUID: [String]] = [:]
+        var order: [UUID: Int] = [:]
+        init(_ books: [Book]) { for book in books { register(book) } }
+        mutating func register(_ book: Book) {
+            if order[book.id] == nil { order[book.id] = order.count }
+            for key in aliases[book.id] ?? [] {
+                matches[key]?.removeAll { $0.id == book.id }
+            }
+            var keys = ["id:\(book.id)"]
+            if let id = book.serverEntryID { keys.append("server:\(id)") }
+            if let id = book.canonicalBookID { keys.append("canonical:\(id)") }
+            if let id = book.googleBooksVolumeId { keys.append("catalog:\(id)") }
+            aliases[book.id] = keys
+            for key in keys { matches[key, default: []].append(book) }
+        }
+        func book(for remote: RemoteLibraryEntry) -> Book? {
+            ["id:\(remote.id)", "server:\(remote.id)", "canonical:\(remote.bookID)", "catalog:\(remote.book.catalogID)"]
+                .flatMap { matches[$0] ?? [] }
+                .min { order[$0.id, default: 0] < order[$1.id, default: 0] }
+        }
+    }
+
+    private func merge(_ remote: RemoteLibraryEntry, index: inout MergeIndex) throws {
+        if let local = index.book(for: remote) {
             guard remote.revision >= local.serverRevision else { return }
             if local.pendingOperationID != nil {
-                if remote.revision > local.serverRevision {
-                    try recordConflict(remote, for: local)
-                }
+                if remote.revision > local.serverRevision { try recordConflict(remote, for: local) }
             } else {
                 apply(remote, to: local)
             }
+            index.register(local)
             return
         }
         let local = Book(id: remote.id, title: remote.book.title, author: remote.book.author,
                          isbn: remote.book.isbn ?? remote.book.catalogID,
                          coverURL: remote.book.coverURL ?? "", googleBooksVolumeId: remote.book.catalogID)
+        // Downloading an existing book is not a new addition to the library.
+        local.addedAt = remote.readingData?.libraryAddedAt
         local.pendingOperationID = nil
         modelContext.insert(local)
-        books.append(local)
         apply(remote, to: local)
+        index.register(local)
     }
 
     private func apply(_ remote: RemoteLibraryEntry, to book: Book) {
@@ -544,6 +581,7 @@ final class LibraryRepository {
         book.coverURL = remote.book.coverURL ?? ""
         book.googleBooksVolumeId = remote.book.catalogID
         book.isRemovedFromLibrary = remote.deletedAt != nil
+        book.addedAt = remote.readingData?.libraryAddedAt ?? book.addedAt
         book.storyGraphData = remote.readingData.flatMap { try? JSONEncoder().encode($0) }
     }
 
@@ -578,11 +616,16 @@ final class LibraryRepository {
 
     private func change(for book: Book) throws -> LibraryChange {
         guard let operationID = book.pendingOperationID else { throw LibraryRepositoryError.invalidResponse }
+        var reading = try book.storyGraphData.map { try JSONDecoder().decode(StoryGraphReadingData.self, from: $0) }
+        // An imported Date Added already supplies the original date across devices.
+        let importedDate = (reading?.dateAdded).flatMap(StoryGraphImporter.normalizedDate)
+        if importedDate == nil, let addedAt = book.addedAt {
+            if reading == nil { reading = UpNextQueue.metadata(for: book) }
+            if reading?.libraryAddedAt == nil { reading?.libraryAddedAt = addedAt }
+        }
         return LibraryChange(operationID: operationID, entryID: book.serverEntryID ?? book.id,
                              expectedRevision: book.serverRevision, deleted: book.isRemovedFromLibrary,
-                             book: try snapshot(for: book), readingData: try book.storyGraphData.map {
-                                 try JSONDecoder().decode(StoryGraphReadingData.self, from: $0)
-                             })
+                             book: try snapshot(for: book), readingData: reading)
     }
 
     private func snapshot(for book: Book) throws -> LibraryBookSnapshot {

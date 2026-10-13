@@ -31,15 +31,15 @@ struct TextualDropdown<Value: Hashable>: View {
             }
         } label: {
             HStack(spacing: 6) {
-                Text(title).font(.custom("PlusJakartaSans-Regular", size: 14, relativeTo: .body))
-                Image(systemName: menu.activeID == id ? "chevron.up" : "chevron.down")
-                    .font(.system(size: 10, weight: .semibold)).accessibilityHidden(true)
+                Text(title).font(.designSystem(.bodySmall))
+                DesignSystemIconView(menu.activeID == id ? .chevronUp : .chevronDown, size: TextualIconStyle.compact.size)
+                    .accessibilityHidden(true)
             }
             .fixedSize(horizontal: true, vertical: false)
             .foregroundStyle(Color.paper)
             .padding(.horizontal, 12).padding(.vertical, 8)
             .frame(minHeight: 44)
-            .background(Color.velvet.opacity(0.35), in: Capsule())
+            .background(Color.controlSurface, in: Capsule())
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
@@ -88,8 +88,7 @@ private struct TextualDropdownHost: ViewModifier {
                 GeometryReader { geometry in
                     if let id = menu.activeID, let anchor = anchors[id] {
                         let source = geometry[anchor]
-                        let font = UIFontMetrics(forTextStyle: .body).scaledFont(for:
-                            UIFont(name: "PlusJakartaSans-Regular", size: 14) ?? .systemFont(ofSize: 14))
+                        let font = DesignSystemFont.bodySmall.uiFont
                         let labelWidth = menu.items.map { ($0.title as NSString).size(withAttributes: [.font: font]).width }.max() ?? 0
                         let width = min(max(source.width, ceil(labelWidth) + 96), max(0, geometry.size.width - 32))
                         let below = max(0, geometry.size.height - source.maxY - 24)
@@ -102,23 +101,12 @@ private struct TextualDropdownHost: ViewModifier {
                         let backdropTop = opensBelow ? source.maxY : max(0, y - 16)
                         let backdropHeight = opensBelow ? height + 24 : source.minY - backdropTop
                         ZStack(alignment: .topLeading) {
-                            Color.black.opacity(0.2)
+                            Color.clear
                                 .ignoresSafeArea()
                                 .contentShape(Rectangle())
                                 .onTapGesture { menu.dismiss() }
                                 .accessibilityLabel("Dismiss \(menu.label) options")
                                 .accessibilityAddTraits(.isButton)
-                            Color.clear
-                                .frame(height: backdropHeight)
-                                .background(Color.inkwell)
-                                .overlay(alignment: opensBelow ? .bottom : .top) {
-                                    TextualChromeFade(edge: opensBelow ? .top : .bottom)
-                                        .frame(height: 64)
-                                        .offset(y: opensBelow ? 64 : -64)
-                                }
-                                .offset(y: backdropTop)
-                                .allowsHitTesting(false)
-                                .accessibilityHidden(true)
                             ScrollView {
                                 LazyVStack(spacing: 0) {
                                     ForEach(menu.items) { item in
@@ -129,12 +117,11 @@ private struct TextualDropdownHost: ViewModifier {
                                         } label: {
                                             HStack(spacing: 12) {
                                                 Text(item.title)
-                                                    .font(.custom("PlusJakartaSans-Regular", size: 14, relativeTo: .body))
+                                                    .font(.designSystem(.bodySmall))
                                                     .lineLimit(1)
                                                     .layoutPriority(1)
                                                 Spacer(minLength: 8)
-                                                Image(systemName: "checkmark")
-                                                    .font(.system(size: 12, weight: .semibold))
+                                                DesignSystemIconView(.checkmark, size: TextualIconStyle.checkmark.size)
                                                     .opacity(item.selected ? 1 : 0)
                                                     .accessibilityHidden(true)
                                             }
@@ -157,9 +144,9 @@ private struct TextualDropdownHost: ViewModifier {
                             .scrollIndicators(.hidden)
                             .frame(width: width, height: height)
                             .background(LinearGradient(colors: [.dropdownSurface, .inkwell],
-                                startPoint: .top, endPoint: .bottom), in: RoundedRectangle(cornerRadius: 20))
-                            .overlay { RoundedRectangle(cornerRadius: 20).strokeBorder(Color.ghost.opacity(0.16), lineWidth: 1).allowsHitTesting(false) }
-                            .clipShape(RoundedRectangle(cornerRadius: 20))
+                                startPoint: .top, endPoint: .bottom), in: RoundedRectangle(cornerRadius: TextualLayout.menuRadius))
+                            .overlay { RoundedRectangle(cornerRadius: TextualLayout.menuRadius).strokeBorder(Color.ghost.opacity(0.16), lineWidth: 1).allowsHitTesting(false) }
+                            .clipShape(RoundedRectangle(cornerRadius: TextualLayout.menuRadius))
                             .shadow(color: .black.opacity(0.35), radius: 16, y: 8)
                             .accessibilityIdentifier("textual.dropdown.options")
                             .accessibilityAction(.escape) { menu.dismiss() }

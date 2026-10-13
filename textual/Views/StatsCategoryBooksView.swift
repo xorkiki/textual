@@ -8,6 +8,7 @@ enum StatsBookCategory: Hashable, Identifiable {
     case mood(String)
     case pace(PaceStat.Pace)
     case genre(String)
+    case pages
 
     var id: Self { self }
     var title: String {
@@ -15,6 +16,7 @@ enum StatsBookCategory: Hashable, Identifiable {
         case .fiction(let kind): return kind?.rawValue ?? "Unclassified"
         case .mood(let name), .genre(let name): return name
         case .pace(let pace): return pace.rawValue
+        case .pages: return "Pages"
         }
     }
     var chartTitle: String {
@@ -23,24 +25,39 @@ enum StatsBookCategory: Hashable, Identifiable {
         case .mood: return "Moods"
         case .pace: return "Pace"
         case .genre: return "Genres"
+        case .pages: return "Pages"
+        }
+    }
+
+    func estimateReason(for entry: ReadingBookSnapshot) -> String? {
+        switch self {
+        case .fiction: return entry.guess.kindReason
+        case .genre: return entry.guess.genreReason
+        case .mood: return entry.moodEstimateReason
+        case .pace: return entry.paceEstimateReason
+        case .pages:
+            if let reason = entry.pageEstimateReason { return "About \(entry.statsPages) pages · \(reason)" }
+            return "\(entry.statsPages) pages · Catalog count"
         }
     }
 
     @MainActor
-    func books(in books: [Book], filter: ReadingStatsFilter) -> [Book] {
+    func books(in books: [Book], filter: ReadingStatsFilter, snapshots: [UUID: ReadingBookSnapshot] = [:]) -> [Book] {
         var seen: Set<UUID> = []
         return books.filter { book in
             guard !book.isRemovedFromLibrary, let reading = book.importedReading,
                   filter.count(reading) > 0, seen.insert(book.id).inserted else { return false }
             switch self {
             case .fiction(let kind):
-                return StatsMetadataCache.fictionKind(book) == kind
+                return (snapshots[book.id]?.statsKind ?? StatsMetadataCache.fictionKind(book)
+                    ?? ReadingBookSnapshot(ReadingBookInput(book)).statsKind) == kind
             case .mood(let name):
-                return MoodStat.counts(readings: [reading], filter: filter).contains { $0.name == name && $0.count > 0 }
+                return MoodStat.counts(entries: [snapshots[book.id] ?? ReadingBookSnapshot(ReadingBookInput(book))], filter: filter).contains { $0.name == name && $0.count > 0 }
             case .pace(let pace):
-                return PaceStat.counts(readings: [reading], filter: filter).contains { $0.pace == pace && $0.count > 0 }
+                return PaceStat.counts(entries: [snapshots[book.id] ?? ReadingBookSnapshot(ReadingBookInput(book))], filter: filter).contains { $0.pace == pace && $0.count > 0 }
+            case .pages: return true
             case .genre(let name):
-                let genres = StatsMetadataCache.genres(book)
+                let genres = snapshots[book.id]?.statsGenres ?? ReadingBookSnapshot(ReadingBookInput(book)).statsGenres
                 return genres.contains(name) || (name == "Unclassified" && genres.isEmpty)
             }
         }.sorted {
@@ -94,25 +111,43 @@ struct StatsCategoryBooksView: View {
     let filter: ReadingStatsFilter
     @Query(filter: #Predicate<Book> { !$0.isRemovedFromLibrary }) private var books: [Book]
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.readingLibrary) private var cache
     @State private var selectedBook: Book?
 
     var body: some View {
-        let matches = category.books(in: books, filter: filter)
+        // Reuse the worker's decoded estimates; never reclassify the library in a view body.
+        let snapshots = Dictionary(uniqueKeysWithValues: (cache?.snapshot.entries ?? []).map { ($0.id, $0) })
+        let matches = category.books(in: books, filter: filter, snapshots: snapshots)
         NavigationStack {
             ZStack {
                 Color.inkwell.ignoresSafeArea()
                 ScrollView {
                     VStack(alignment: .leading, spacing: 20) {
+                        if !matches.isEmpty {
+                            Text("Touch and hold a cover to see its classification or page estimate.")
+                                .font(.designSystem(.bodySmall))
+                                .foregroundStyle(Color.ghost)
+                        }
                         if matches.isEmpty {
-                            ContentUnavailableView("No matching books", systemImage: "books.vertical",
-                                description: Text("There are no books in this category for the selected period."))
+                            TextualEmptyState(title: "No matching books", icon: .archive,
+                                detail: "There are no books in this category for the selected period.")
                                 .foregroundStyle(Color.paper)
                         } else {
                             LazyVGrid(columns: [GridItem(.adaptive(minimum: 120), spacing: 16, alignment: .top)], spacing: 20) {
                                 ForEach(matches) { book in
-                                    Button { selectedBook = book } label: { BookGridItem(book: book) }
+                                    Button { selectedBook = book } label: {
+                                        SavedBookCover(book: book, width: 120, height: 180)
+                                    }
                                         .buttonStyle(.plain)
-                                        .accessibilityHint("Open book details")
+                                        .accessibilityLabel("\(book.title) by \(book.author)")
+                                        .accessibilityHint("Open book details. Touch and hold for classification or page estimates.")
+                                        .textualContextMenu(isEnabled: category.estimateReason(for:
+                                            snapshots[book.id] ?? ReadingBookSnapshot(ReadingBookInput(book))) != nil) {
+                                            let entry = snapshots[book.id] ?? ReadingBookSnapshot(ReadingBookInput(book))
+                                            if let reason = category.estimateReason(for: entry) {
+                                                Text(reason).fixedSize(horizontal: false, vertical: true).padding(12)
+                                            }
+                                        }
                                 }
                             }
                         }
@@ -120,9 +155,9 @@ struct StatsCategoryBooksView: View {
                     .padding(24)
                 }
             }
-            .textualBackHeader(title: category.title, backLabel: "Back to Stats") { dismiss() }
+            .textualSheetHeader(category.title) { dismiss() }
             .sheet(item: $selectedBook) { book in
-                NavigationStack { BookDetailView(book: book) }
+                NavigationStack { BookDetailView(book: book, isPresentedAsSheet: true) }
             }
         }
         .preferredColorScheme(.dark)

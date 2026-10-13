@@ -1,12 +1,23 @@
 import SwiftUI
 
-struct MoodStat: Identifiable {
+struct MoodStat: Identifiable, Sendable {
     let name: String
     let color: Color
     var count: Int = 0
+    var estimatedCount: Int = 0
     var id: String { name }
 
     static func counts(readings: [StoryGraphReadingData], filter: ReadingStatsFilter) -> [MoodStat] {
+        counts(values: readings.map { ($0.moods, filter.count($0), false) })
+    }
+
+    static func counts(entries: [ReadingBookSnapshot], filter: ReadingStatsFilter) -> [MoodStat] {
+        counts(values: entries.compactMap { entry in
+            entry.reading.map { (entry.moods?.value ?? [], filter.count($0), entry.moodEstimateReason != nil) }
+        })
+    }
+
+    private static func counts(values: [([String], Int, Bool)]) -> [MoodStat] {
         var result = [
             MoodStat(name: "Dark", color: .bloodletter.opacity(0.3)),
             MoodStat(name: "Tense", color: .bloodletter),
@@ -17,22 +28,24 @@ struct MoodStat: Identifiable {
             MoodStat(name: "Inspiring", color: .clayhearth),
             MoodStat(name: "Informative", color: .inkstorm),
             MoodStat(name: "Funny", color: .clayhearth.opacity(0.3)),
-            MoodStat(name: "Sad", color: .inkstorm.opacity(0.3))
+            MoodStat(name: "Sad", color: .inkstorm.opacity(0.3)),
+            MoodStat(name: "Hopeful", color: .moss.opacity(0.6)),
+            MoodStat(name: "Lighthearted", color: .clayhearth.opacity(0.6))
         ]
-        for reading in readings {
-            let count = filter.count(reading)
+        for (labels, count, estimated) in values {
             guard count > 0 else { continue }
-            let moods = Set(reading.moods.map {
+            let moods = Set(labels.map {
                 $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             }.filter { !$0.isEmpty })
             // Preserve all imported labels, not just the initial design palette.
             for name in moods.isEmpty ? ["not recorded"] : moods.sorted() {
                 if let index = result.firstIndex(where: { $0.name.lowercased() == name }) {
                     result[index].count += count
+                    if estimated { result[index].estimatedCount += count }
                 } else {
                     result.append(MoodStat(name: name == "not recorded" ? "Not recorded" : name.capitalized,
                                            color: name == "not recorded" ? .ghost.opacity(0.3) : GenreStat(name: name, count: 0).color,
-                                           count: count))
+                                           count: count, estimatedCount: estimated ? count : 0))
                 }
             }
         }
@@ -100,11 +113,11 @@ struct MoodStatsChart: View {
         }
         VStack(alignment: .leading, spacing: 24) {
             Text("Moods")
-                .font(.custom("CormorantGaramond-Regular", size: 26, relativeTo: .title2))
+                .font(.designSystem(.sectionHeading))
                 .foregroundStyle(Color.paper)
             if values.isEmpty {
                 Text("No moods recorded for this selection yet.")
-                    .font(.custom("PlusJakartaSans-Regular", size: 14, relativeTo: .body))
+                    .font(.designSystem(.bodySmall))
                     .foregroundStyle(Color.ghost)
                     .frame(maxWidth: .infinity, minHeight: 260)
             } else {
@@ -140,7 +153,7 @@ struct MoodStatsChart: View {
                             Text(mood.name).foregroundStyle(Color.paper)
                             Text(mood.count.formatted()).foregroundStyle(Color.ghost)
                         }
-                        .font(.custom("PlusJakartaSans-Regular", size: 12, relativeTo: .caption))
+                        .font(.designSystem(.uiLabel))
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .frame(minHeight: 44)
                         .contentShape(Rectangle())

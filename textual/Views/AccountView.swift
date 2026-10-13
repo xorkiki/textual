@@ -64,7 +64,7 @@ struct AccountView: View {
                         }
                     }
                     .frame(maxWidth: 480, alignment: .leading)
-                    .padding(.horizontal, 28)
+                    .padding(.horizontal, TextualLayout.pageInset)
                     .padding(.top, screen == .welcome ? 34 : 42)
                     .padding(.bottom, 28)
                     .frame(maxWidth: .infinity)
@@ -75,7 +75,7 @@ struct AccountView: View {
                     .textualChromeBackground(edge: .bottom, fadeInside: true)
             }
         }
-        .environment(\.colorScheme, .dark)
+        .textualScreenDefaults()
         .task(id: screen) {
             seedProfileDraft()
             guard let target = initialFocus else { focusedField = nil; return }
@@ -111,13 +111,10 @@ struct AccountView: View {
     private var navigationBar: some View {
         HStack {
             if screen == .account {
-                Button("Done") { dismiss() }
-                    .font(AccountTypography.body(14))
-                    .foregroundStyle(Color.paper)
-                    .frame(minWidth: 44, minHeight: 44)
+                TextualCloseButton { dismiss() }
             } else if screen == .profileFirstName || screen == .profileError {
                 Button("Sign out") { Task { _ = await session.signOut() } }
-                    .font(AccountTypography.body(14))
+                    .font(.designSystem(.bodySmall))
                     .foregroundStyle(Color.ghost)
                     .frame(minHeight: 44)
                     .disabled(isBusy)
@@ -132,20 +129,22 @@ struct AccountView: View {
             Spacer()
             if let progress = signupProgress {
                 Text("\(progress) / 4")
-                    .font(AccountTypography.body(12))
+                    .font(.designSystem(.uiLabel))
                     .tracking(2)
                     .foregroundStyle(Color.ghost)
                     .accessibilityLabel("Create account, step \(progress) of 4")
             } else if screen != .welcome {
                 Text("TEXTUAL")
-                    .font(.custom("CormorantGaramond-Regular", size: 18, relativeTo: .headline))
+                    .font(.designSystem(.wordmark))
                     .tracking(3)
                     .foregroundStyle(Color.ghost)
                     .accessibilityHidden(true)
             }
         }
-        .padding(.horizontal, 20)
-        .padding(.top, 4)
+        .buttonStyle(TextualHeaderActionStyle())
+        .padding(.horizontal, TextualLayout.pageInset)
+        .padding(.top, TextualLayout.headerTop)
+        .padding(.bottom, TextualLayout.headerBottom)
     }
 
     @ViewBuilder
@@ -169,7 +168,7 @@ struct AccountView: View {
             Text(screen == .signupUsername
                  ? "You’ll claim your username after confirming your email."
                  : "Your username is yours once you finish setting up your account.")
-                .font(AccountTypography.body(13))
+                .font(.designSystem(.caption))
                 .foregroundStyle(Color.ghost)
                 .fixedSize(horizontal: false, vertical: true)
         case .signinEmail:
@@ -182,7 +181,7 @@ struct AccountView: View {
             Button("Forgot password?") {
                 transition(to: .resetEmail)
             }
-            .font(AccountTypography.body(14))
+            .font(.designSystem(.bodySmall))
             .foregroundStyle(Color.paper)
             .frame(minHeight: 44, alignment: .leading)
             .accessibilityIdentifier("auth.forgotPassword")
@@ -298,8 +297,7 @@ struct AccountView: View {
                     showsPassword.toggle()
                     focusedField = .password
                 } label: {
-                    Image(systemName: showsPassword ? "eye.slash" : "eye")
-                        .font(.system(size: 18))
+                    DesignSystemIconView(showsPassword ? .conceal : .preview, size: TextualIconStyle.compact.size)
                         .foregroundStyle(Color.ghost)
                         .frame(width: 44, height: 44)
                 }
@@ -312,8 +310,8 @@ struct AccountView: View {
     }
 
     private var passwordRequirement: some View {
-        Label("At least 8 characters", systemImage: draft.password.count >= 8 ? "checkmark.circle.fill" : "circle")
-            .font(AccountTypography.body(13))
+        Label("At least 8 characters", textualIcon: draft.password.count >= 8 ? .selected : .unselected)
+            .font(.designSystem(.caption))
             .foregroundStyle(draft.password.count >= 8 ? Color.paper : Color.ghost)
             .accessibilityLabel(draft.password.count >= 8 ? "Password length requirement met" : "Password must have at least 8 characters")
     }
@@ -348,7 +346,7 @@ struct AccountView: View {
             .disabled(isBusy)
             feedback
             Text("You can read the email on any device. Enter its code here.")
-                .font(AccountTypography.body(14))
+                .font(.designSystem(.bodySmall))
                 .foregroundStyle(Color.ghost)
                 .fixedSize(horizontal: false, vertical: true)
             TimelineView(.periodic(from: .now, by: 1)) { context in
@@ -370,7 +368,7 @@ struct AccountView: View {
             guard validateEmail() else { return }
             openCodeEntry(kind)
         }
-        .font(AccountTypography.body(14))
+        .font(.designSystem(.bodySmall))
         .foregroundStyle(Color.paper)
         .frame(minHeight: 44, alignment: .leading)
         .accessibilityIdentifier(identifier)
@@ -392,7 +390,7 @@ struct AccountView: View {
                 draft.email = email
                 Task { await sendRecoveryCode() }
             }
-            .font(AccountTypography.body(14))
+            .font(.designSystem(.bodySmall))
             .foregroundStyle(Color.paper)
             .frame(minHeight: 44)
             .disabled(isBusy || session.email == nil)
@@ -404,16 +402,16 @@ struct AccountView: View {
 
     private func accountValue(_ label: String, value: String) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(label).font(AccountTypography.body(11)).tracking(1.5).foregroundStyle(Color.ghost)
-            Text(value).font(AccountTypography.body(17)).foregroundStyle(Color.paper).textSelection(.enabled)
+            Text(label).font(.designSystem(.metricLabel)).tracking(1.5).foregroundStyle(Color.ghost)
+            Text(value).font(.designSystem(.bodyMedium)).foregroundStyle(Color.paper).textSelection(.enabled)
         }
     }
 
     @ViewBuilder
     private var feedback: some View {
         if let error = validationMessage ?? session.errorMessage {
-            Label(error, systemImage: "exclamationmark.circle")
-                .font(AccountTypography.body(13))
+            Label(error, textualIcon: .warning)
+                .font(.designSystem(.caption))
                 .foregroundStyle(Color.paper)
                 .fixedSize(horizontal: false, vertical: true)
                 .accessibilityElement(children: .ignore)
@@ -421,7 +419,7 @@ struct AccountView: View {
                 .accessibilityIdentifier("auth.error")
         } else if let message = session.message {
             Text(message)
-                .font(AccountTypography.body(13))
+                .font(.designSystem(.caption))
                 .foregroundStyle(Color.ghost)
                 .fixedSize(horizontal: false, vertical: true)
                 .accessibilityIdentifier("auth.message")
@@ -446,7 +444,7 @@ struct AccountView: View {
                     Button(session.isSignedIn ? "Back to Account" : "Back to Sign In") {
                         transition(to: session.isSignedIn ? .account : .signinEmail)
                     }
-                        .font(AccountTypography.body(13))
+                        .font(.designSystem(.caption))
                         .foregroundStyle(Color.ghost)
                         .frame(minHeight: 44)
                         .accessibilityIdentifier("auth.backToSignIn")
@@ -704,22 +702,16 @@ struct AccountView: View {
     }
 }
 
-private enum AccountTypography {
-    static func body(_ size: CGFloat = 16) -> Font {
-        .custom("PlusJakartaSans-Regular", size: size, relativeTo: .body)
-    }
-}
-
 private struct AccountWelcomePresentation: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 36) {
             Text("A READING LIFE")
-                .font(AccountTypography.body(11))
+                .font(.designSystem(.metricLabel))
                 .tracking(3)
                 .foregroundStyle(Color.ghost)
                 .padding(.top, 42)
             Text("TEXTUAL")
-                .font(.custom("CormorantGaramond-Regular", size: 76, relativeTo: .largeTitle))
+                .font(.designSystem(.welcomeTitle))
                 .tracking(1)
                 .foregroundStyle(Color.paper)
                 .lineLimit(1)
@@ -730,7 +722,7 @@ private struct AccountWelcomePresentation: View {
                 .frame(width: 46, height: 3)
                 .accessibilityHidden(true)
             Text("where reading\nbecomes ritual")
-                .font(.custom("CormorantGaramond-Regular", size: 38, relativeTo: .title))
+                .font(.designSystem(.welcomeTagline))
                 .foregroundStyle(Color.paper.opacity(0.85))
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -744,12 +736,12 @@ private struct AccountQuestionHeading: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text(title)
-                .font(.custom("CormorantGaramond-Regular", size: 46, relativeTo: .largeTitle))
+                .font(.designSystem(.heading1))
                 .foregroundStyle(Color.paper)
                 .fixedSize(horizontal: false, vertical: true)
                 .accessibilityAddTraits(.isHeader)
             Text(detail)
-                .font(AccountTypography.body(15))
+                .font(.designSystem(.bodyMedium))
                 .foregroundStyle(Color.ghost)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -773,11 +765,11 @@ private struct AccountFieldFrame<Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text(label)
-                .font(AccountTypography.body(10))
+                .font(.designSystem(.fieldLabel))
                 .tracking(1.5)
                 .foregroundStyle(Color.ghost)
             content
-                .font(AccountTypography.body(21))
+                .font(.designSystem(.fieldInput))
                 .foregroundStyle(Color.paper)
                 .tint(.paper)
                 .frame(minHeight: 44)
@@ -795,18 +787,8 @@ private struct AccountPrimaryButton: View {
     var identifier = "auth.next"
     let action: () -> Void
     var body: some View {
-        Button(action: action) {
-            Text(isWorking ? "\(title)…" : title)
-                .font(.custom("PlusJakartaSans-Medium", size: 16, relativeTo: .body))
-                .multilineTextAlignment(.center)
-            .foregroundStyle(Color.inkwell)
-            .padding(.horizontal, 22)
-            .padding(.vertical, 19)
-            .frame(maxWidth: .infinity, minHeight: 56)
-            .background(Color.paper, in: Capsule())
-            .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
+        Button(isWorking ? "\(title)…" : title, action: action)
+            .buttonStyle(TextualButtonStyle())
         .accessibilityIdentifier(identifier)
     }
 }
@@ -816,17 +798,8 @@ private struct AccountSecondaryButton: View {
     var identifier = "welcome.createAccount"
     let action: () -> Void
     var body: some View {
-        Button(action: action) {
-            Text(title)
-                .font(.custom("PlusJakartaSans-Medium", size: 16, relativeTo: .body))
-                .foregroundStyle(Color.paper)
-                .padding(.vertical, 19)
-                .frame(maxWidth: .infinity, minHeight: 56)
-                .background(Color.velvet.opacity(0.35), in: Capsule())
-                .overlay(Capsule().stroke(Color.paper.opacity(0.2), lineWidth: 1))
-                .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
+        Button(title, action: action)
+            .buttonStyle(TextualButtonStyle(variant: .secondary))
         .accessibilityIdentifier(identifier)
     }
 }
@@ -835,7 +808,7 @@ private extension View {
     func accountActionArea() -> some View {
         self
             .frame(maxWidth: 480)
-            .padding(.horizontal, 28)
+            .padding(.horizontal, TextualLayout.pageInset)
             .padding(.top, 16)
             .padding(.bottom, 20)
             .frame(maxWidth: .infinity)
@@ -847,7 +820,7 @@ private extension View {
     ZStack {
         Color.inkwell.ignoresSafeArea()
         VStack(alignment: .leading) {
-            AccountWelcomePresentation().padding(28)
+            AccountWelcomePresentation().padding(TextualLayout.pageInset)
             Spacer()
             VStack(spacing: 12) {
                 AccountPrimaryButton(title: "Sign In", isWorking: false, action: {})
@@ -855,7 +828,7 @@ private extension View {
             }.accountActionArea()
         }
     }
-    .environment(\.colorScheme, .dark)
+    .textualScreenDefaults()
 }
 
 #Preview("Email question") {
@@ -869,10 +842,10 @@ private extension View {
             Spacer()
             AccountPrimaryButton(title: "Continue", isWorking: false, action: {})
         }
-        .padding(28)
+        .padding(TextualLayout.pageInset)
         .padding(.top, 76)
     }
-    .environment(\.colorScheme, .dark)
+    .textualScreenDefaults()
 }
 
 #Preview("Email code") {
@@ -888,16 +861,16 @@ private extension View {
                             .keyboardType(.numberPad)
                     }
                     Text("You can read the email on any device. Enter its code here.")
-                        .font(AccountTypography.body(14))
+                        .font(.designSystem(.bodySmall))
                         .foregroundStyle(Color.ghost)
                     AccountSecondaryButton(title: "Resend Code", action: {})
                 }
-                .padding(28)
+                .padding(TextualLayout.pageInset)
                 .padding(.top, 42)
             }
             AccountPrimaryButton(title: "Confirm Email", isWorking: false, action: {})
                 .accountActionArea()
         }
     }
-    .environment(\.colorScheme, .dark)
+    .textualScreenDefaults()
 }

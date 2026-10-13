@@ -1,6 +1,6 @@
 import Foundation
 
-enum ArchiveReadingStatus: String, CaseIterable, Identifiable {
+enum ArchiveReadingStatus: String, CaseIterable, Identifiable, Sendable {
     case all = "all", read = "read", tbr = "to-read", reading = "currently-reading", dnf = "did-not-finish"
     var id: String { rawValue }
     var title: String {
@@ -23,7 +23,7 @@ enum ArchiveReadingStatus: String, CaseIterable, Identifiable {
     }
 }
 
-struct ArchiveFilter: Equatable {
+struct ArchiveFilter: Equatable, Sendable {
     var status: ArchiveReadingStatus = .read
     var genre: String?
     var mood: String?
@@ -36,7 +36,7 @@ struct ArchiveFilter: Equatable {
     }
 }
 
-struct ArchiveFilterOptions: Equatable {
+struct ArchiveFilterOptions: Equatable, Sendable {
     let genres: [String]
     let moods: [String]
     let paces: [String]
@@ -87,5 +87,91 @@ struct ArchiveFilterCatalog {
 
     private static func sorted(_ values: [String]) -> [String] {
         Set(values.filter { !$0.isEmpty }).sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+    }
+}
+
+/// Prepared once per library change, independently of scroll and search rendering.
+struct ArchiveSnapshot: Sendable {
+    struct Entry: Sendable {
+        let id: UUID
+        let title: String
+        let author: String
+        let status: String
+        let genres: Set<String>
+        let moods: Set<String>
+        let pace: String
+    }
+    let entries: [Entry]
+    let options: ArchiveFilterOptions
+
+    init(entries: [ReadingBookSnapshot]) {
+        func label(_ value: String) -> String {
+            value.split(whereSeparator: \.isWhitespace).joined(separator: " ").lowercased().capitalized
+        }
+        self.entries = entries.map { entry in
+            Entry(id: entry.id, title: entry.input.title, author: entry.input.author,
+                  status: entry.reading?.status ?? "to-read", genres: entry.genres,
+                  moods: Set((entry.reading?.moods ?? []).map(label).filter { !$0.isEmpty }),
+                  pace: label(entry.reading?.pace ?? ""))
+        }
+        func sorted(_ values: [String]) -> [String] {
+            Set(values.filter { !$0.isEmpty }).sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+        }
+        options = ArchiveFilterOptions(genres: sorted(self.entries.flatMap(\.genres)),
+            moods: sorted(self.entries.flatMap(\.moods)), paces: sorted(self.entries.map(\.pace)))
+    }
+
+    func matching(_ filter: ArchiveFilter, search: String = "", excluding: Set<UUID> = []) -> Set<UUID> {
+        Set(entries.filter {
+            !excluding.contains($0.id)
+                && (filter.status == .all || $0.status == filter.status.rawValue)
+                && (filter.genre.map($0.genres.contains) ?? true)
+                && (filter.mood.map($0.moods.contains) ?? true)
+                && (filter.pace == nil || filter.pace == $0.pace)
+                && (search.isEmpty || $0.title.localizedStandardContains(search) || $0.author.localizedStandardContains(search))
+        }.map(\.id))
+    }
+}
+
+
+/// Dates are prepared once per sort; equal/unknown dates have a stable title order.
+enum ArchiveSort: String, CaseIterable, Identifiable {
+    case title, recentlyAdded, oldestAdded
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .title: return "Title A–Z"
+        case .recentlyAdded: return "Recently added"
+        case .oldestAdded: return "Oldest added"
+        }
+    }
+
+    @MainActor func sorted(_ books: [Book]) -> [Book] {
+        let dated = books.map { (book: $0, date: self == .title ? nil : Self.dateAdded(to: $0)) }
+        return dated.sorted { lhs, rhs in
+            if self != .title, lhs.date != rhs.date {
+                guard let first = lhs.date else { return false }
+                guard let second = rhs.date else { return true }
+                return self == .recentlyAdded ? first > second : first < second
+            }
+            let comparison = lhs.book.title.localizedStandardCompare(rhs.book.title)
+            return comparison == .orderedSame
+                ? lhs.book.id.uuidString < rhs.book.id.uuidString : comparison == .orderedAscending
+        }.map(\.book)
+    }
+
+    @MainActor static func dateAdded(to book: Book) -> Date? {
+        let reading = book.importedReading
+        if let raw = reading?.dateAdded, let normalized = StoryGraphImporter.normalizedDate(raw) {
+            let parts = normalized.split(separator: "-").compactMap { Int($0) }
+            if parts.count == 3 {
+                var calendar = Calendar(identifier: .gregorian)
+                calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+                if let date = calendar.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2])) {
+                    return date
+                }
+            }
+        }
+        return reading?.libraryAddedAt ?? book.addedAt
     }
 }

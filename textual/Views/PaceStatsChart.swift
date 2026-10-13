@@ -1,8 +1,8 @@
 import SwiftUI
 import Charts
 
-struct PaceStat: Identifiable {
-    enum Pace: String, CaseIterable {
+struct PaceStat: Identifiable, Sendable {
+    enum Pace: String, CaseIterable, Sendable {
         case fast = "Fast", medium = "Medium", slow = "Slow", unknown = "Not recorded"
         var color: Color {
             switch self {
@@ -15,6 +15,7 @@ struct PaceStat: Identifiable {
     }
     let pace: Pace
     var count: Int
+    var estimatedCount: Int = 0
     var id: String { pace.rawValue }
 
     static func counts(readings: [StoryGraphReadingData], filter: ReadingStatsFilter) -> [PaceStat] {
@@ -30,6 +31,20 @@ struct PaceStat: Identifiable {
         }
     }
 
+    static func counts(entries: [ReadingBookSnapshot], filter: ReadingStatsFilter) -> [PaceStat] {
+        var result = [PaceStat(pace: .fast, count: 0), PaceStat(pace: .medium, count: 0), PaceStat(pace: .slow, count: 0)]
+        for entry in entries {
+            guard let reading = entry.reading else { continue }
+            let count = filter.count(reading)
+            guard count > 0 else { continue }
+            let index: Int
+            switch entry.pace.value { case .fast: index = 0; case .medium: index = 1; case .slow: index = 2 }
+            result[index].count += count
+            if entry.paceEstimateReason != nil { result[index].estimatedCount += count }
+        }
+        return result
+    }
+
     func fraction(total: Int) -> Double? { total > 0 ? Double(count) / Double(total) : nil }
 }
 
@@ -41,7 +56,7 @@ struct PaceStatsChart: View {
         let total = paces.reduce(0) { $0 + $1.count }
         VStack(alignment: .leading, spacing: 24) {
             Text("Pace")
-                .font(.custom("CormorantGaramond-Regular", size: 26, relativeTo: .title2))
+                .font(.designSystem(.sectionHeading))
                 .foregroundStyle(Color.paper)
             if total > 0 {
                 Chart {
@@ -59,10 +74,10 @@ struct PaceStatsChart: View {
                 }
                 .chartLegend(.hidden)
                 .frame(height: 230)
-                .accessibilityLabel("Book pace breakdown for \(total) reads, including missing pace")
+                .accessibilityLabel("Book pace breakdown for \(total) reads")
             } else {
                 Text("No pace recorded for this selection yet.")
-                    .font(.custom("PlusJakartaSans-Regular", size: 14, relativeTo: .body))
+                    .font(.designSystem(.bodySmall))
                     .foregroundStyle(Color.ghost)
                     .frame(maxWidth: .infinity, minHeight: 230)
             }
@@ -80,7 +95,7 @@ struct PaceStatsChart: View {
                                 .foregroundStyle(Color.paper)
                                 .frame(minWidth: 55, alignment: .trailing)
                         }
-                        .font(.custom("PlusJakartaSans-Regular", size: 13, relativeTo: .caption))
+                        .font(.designSystem(.caption))
                         .frame(minHeight: 44)
                         .contentShape(Rectangle())
                     }

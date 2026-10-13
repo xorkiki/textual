@@ -16,6 +16,7 @@ struct ArchiveBooksView: View {
     var queuedIDs: Set<UUID> = []
     var chooseBook: ((Book) -> Void)? = nil
     @State private var search = ""
+    @Environment(\.readingLibrary) private var readingLibrary
     var repository: LibraryRepository? = nil
     var bottomNavigationInset: CGFloat = 0
     var onBack: (() -> Void)? = nil
@@ -27,7 +28,7 @@ struct ArchiveBooksView: View {
     @State private var selectedBook: Book?
     @State private var syncBannerHeight: CGFloat = 0
     @State private var filter = ArchiveFilter(status: .all)
-    @State private var headerHeight: CGFloat = 124
+    @State private var sortOrder: ArchiveSort = .title
 
     private var bottomOverlayHeight: CGFloat {
         bottomNavigationInset + (repository?.message == nil ? 0 : syncBannerHeight + 8)
@@ -38,10 +39,13 @@ struct ArchiveBooksView: View {
     ]
 
     var body: some View {
-        let catalog = ArchiveFilterCatalog(books: books)
-        let visibleBooks = catalog.books(matching: filter).filter { book in
+        let catalog = readingLibrary == nil ? ArchiveFilterCatalog(books: books) : nil
+        let options = readingLibrary?.snapshot.archive.options ?? catalog!.options
+        let ids = readingLibrary?.snapshot.archive.matching(filter, search: search, excluding: queuedIDs)
+        let filteredBooks = (ids.map { ids in books.filter { ids.contains($0.id) } } ?? catalog!.books(matching: filter)).filter { book in
             !queuedIDs.contains(book.id) && (search.isEmpty || book.title.localizedStandardContains(search) || book.author.localizedStandardContains(search))
         }
+        let visibleBooks = sortOrder.sorted(filteredBooks)
         Group {
             ZStack {
                 // Background
@@ -50,16 +54,16 @@ struct ArchiveBooksView: View {
 
                 ScrollView {
                     if books.isEmpty {
-                        ContentUnavailableView("Your archive starts here", systemImage: "books.vertical",
-                            description: Text(choosingForQueue ? "Add books to your archive first, then choose your next read here." : "Tap + to find and save your first book."))
+                        TextualEmptyState(title: "Your archive starts here", icon: .archive,
+                            detail: choosingForQueue ? "Add books to your archive first, then choose your next read here." : "Tap + to find and save your first book.")
                             .foregroundStyle(Color.paper)
-                            .padding(.top, headerHeight + 8)
+                            .padding(.top, TextualLayout.contentTop)
                             .padding(.bottom, bottomOverlayHeight + 12)
                     } else if visibleBooks.isEmpty {
-                        ContentUnavailableView("No matching books", systemImage: "line.3.horizontal.decrease",
-                            description: Text(choosingForQueue ? "Try another filter or search. Books already in Up Next or Currently Reading are left out." : "Try another reading status or change your filters."))
+                        TextualEmptyState(title: "No matching books", icon: .search,
+                            detail: choosingForQueue ? "Try another filter or search. Books already in Up Next or Currently Reading are left out." : "Try another reading status or change your filters.")
                             .foregroundStyle(Color.paper)
-                            .padding(.top, headerHeight + 8)
+                            .padding(.top, TextualLayout.contentTop)
                             .padding(.bottom, bottomOverlayHeight + 12)
                     } else {
                         LazyVGrid(columns: columns, spacing: 20) {
@@ -70,17 +74,17 @@ struct ArchiveBooksView: View {
                                     BookGridItem(book: book)
                                 }
                                 .buttonStyle(.plain)
-                                .contextMenu {
+                                .textualContextMenu(isEnabled: !choosingForQueue) {
                                     if !choosingForQueue { Button(role: .destructive) {
                                         deleteBook(book)
                                     } label: {
-                                        Label("Delete", systemImage: "trash")
+                                        Label("Delete", textualIcon: .remove)
                                     } }
                                 }
                             }
                         }
                         .padding(.horizontal, 16)
-                        .padding(.top, headerHeight + 8)
+                        .padding(.top, TextualLayout.contentTop)
                         .padding(.bottom, bottomOverlayHeight + 12)
                     }
                 }
@@ -89,15 +93,11 @@ struct ArchiveBooksView: View {
                 .refreshable { await repository?.synchronize() }
 
             }
-            .overlay(alignment: .top) {
-                libraryHeader(options: catalog.options)
-                    .textualChromeBackground(edge: .top)
-                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { headerHeight = $0 }
-            }
+            .textualPageHeader { libraryHeader(options: options) }
             .overlay(alignment: .bottom) {
                 if let repository, let message = repository.message {
                     HStack(spacing: 12) {
-                        Text(message).font(.caption).foregroundStyle(Color.paper)
+                        Text(message).font(.designSystem(.uiLabel)).foregroundStyle(Color.paper)
                         Spacer()
                         if repository.syncState == .conflict {
                             Button("Review") { showConflicts = true }
@@ -114,7 +114,9 @@ struct ArchiveBooksView: View {
             }
             .textualDropdownHost()
             .toolbar(.hidden, for: .navigationBar)
-            .onChange(of: catalog.options) { _, options in filter.reconcile(with: options) }
+            .onChange(of: options) { _, options in
+                if readingLibrary == nil || readingLibrary?.isReady == true { filter.reconcile(with: options) }
+            }
             .sheet(isPresented: $showAddBook) {
                 AddBookView(repository: repository)
             }
@@ -128,7 +130,7 @@ struct ArchiveBooksView: View {
             } message: { Text(libraryError ?? "") }
             .sheet(item: $selectedBook) { book in
                 NavigationStack {
-                    BookDetailView(book: book)
+                    BookDetailView(book: book, isPresentedAsSheet: true, showsReadingActivity: true)
                 }
             }
         }
@@ -136,37 +138,25 @@ struct ArchiveBooksView: View {
 
     private func libraryHeader(options: ArchiveFilterOptions) -> some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 10) {
-                TextualBackButton { if let onBack { onBack() } else { dismiss() } }
-                Text(choosingForQueue ? "ADD TO UP NEXT" : "ALL BOOKS")
-                    .font(.custom("CormorantGaramond-Regular", size: 28, relativeTo: .title2))
-                    .foregroundStyle(Color.paper)
-                    .accessibilityAddTraits(.isHeader)
-                    .accessibilityIdentifier("archive.header")
-                Spacer(minLength: 8)
-                if !choosingForQueue { Button { showAddBook = true } label: {
-                    Image(systemName: "plus")
-                        .foregroundStyle(Color.paper)
-                        .frame(width: 44, height: 44)
-                        .contentShape(Rectangle())
+            TextualHeader(title: choosingForQueue ? "ADD TO UP NEXT" : "ALL BOOKS",
+                          titleIdentifier: "archive.header",
+                          backAction: choosingForQueue ? nil : { if let onBack { onBack() } else { dismiss() } }) {
+                if choosingForQueue {
+                    TextualCloseButton { if let onBack { onBack() } else { dismiss() } }
+                } else {
+                    Button { showAddBook = true } label: { DesignSystemIconView(.add) }
+                        .buttonStyle(IconButtonStyle())
+                        .accessibilityLabel("Add a book")
                 }
-                .accessibilityLabel("Add a book") }
             }
-            .padding(.horizontal, 24)
-            HStack(spacing: 10) {
-                Image(systemName: "magnifyingglass").foregroundStyle(Color.ghost)
-                TextField("Search your archive", text: $search)
-                    .textStyle(.bodySmall).foregroundStyle(Color.paper)
-                    .autocorrectionDisabled()
-            }
-            .padding(12).background(Color.dropdownSurface, in: Capsule())
-            .padding(.horizontal, 24)
+            TextualSearchField("Search your archive", text: $search)
+                .padding(.horizontal, TextualLayout.pageInset)
             ScrollView(.horizontal) {
                 HStack(spacing: 8) {
                     filterMenus(options: options)
                 }
                 .fixedSize(horizontal: true, vertical: false)
-                .padding(.horizontal, 24)
+                .padding(.horizontal, TextualLayout.pageInset)
             }
             .fixedSize(horizontal: false, vertical: true)
             .scrollIndicators(.hidden)
@@ -174,8 +164,6 @@ struct ArchiveBooksView: View {
             .accessibilityIdentifier("archive.filters")
         }
         .buttonStyle(.plain)
-        .padding(.top, 12)
-        .padding(.bottom, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
@@ -186,6 +174,10 @@ struct ArchiveBooksView: View {
                 TextualDropdownOption(value: $0, title: $0.title, accessibilityTitle: $0.accessibleTitle)
             }, selection: $filter.status)
             .accessibilityIdentifier("archive.status")
+        TextualDropdown(label: "Sort books", title: sortOrder.title,
+            options: ArchiveSort.allCases.map { TextualDropdownOption(value: $0, title: $0.title) },
+            selection: $sortOrder)
+            .accessibilityIdentifier("archive.sort")
         metadataMenu("Genre", allTitle: "All genres", options: options.genres, selection: $filter.genre)
         metadataMenu("Mood", allTitle: "All moods", options: options.moods, selection: $filter.mood)
         metadataMenu("Pace", allTitle: "All paces", options: options.paces, selection: $filter.pace)
@@ -218,7 +210,7 @@ struct ArchiveBooksView: View {
 
 struct BookGridItem: View {
     let book: Book
-    
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             SavedBookCover(book: book, width: 120, height: 180)
@@ -229,7 +221,7 @@ struct BookGridItem: View {
                 .foregroundColor(.paper)
                 .lineLimit(2, reservesSpace: true)
                 .multilineTextAlignment(.leading)
-            
+
             // Author
             Text(book.author)
                 .textStyle(.bodySmall)
@@ -269,16 +261,18 @@ struct BookCoverImage: View {
         configuration: .withDataCache(name: "kiki.textual.covers", sizeLimit: 100 * 1024 * 1024)
     )
 
-    static func imageRequest(_ value: String, width: CGFloat, height: CGFloat) -> Nuke.ImageRequest? {
+    static func imageRequest(_ value: String, width: CGFloat, height: CGFloat, cacheOnly: Bool = false) -> Nuke.ImageRequest? {
         guard let normalized = BookCoverURL.normalized(value), let url = URL(string: normalized) else { return nil }
         var request = URLRequest(url: url)
-        request.timeoutInterval = 15
+        request.timeoutInterval = 8
         request.setValue("Textual/1.0 (https://github.com/xorkiki/textual)", forHTTPHeaderField: "User-Agent")
-        return Nuke.ImageRequest(urlRequest: request, userInfo: [
+        var imageRequest = Nuke.ImageRequest(urlRequest: request, userInfo: [
             .imageIdKey: BookCoverURL.cacheIdentity(normalized),
             .thumbnailKey: Nuke.ImageRequest.ThumbnailOptions(
                 size: CGSize(width: width, height: height), unit: .points, contentMode: .aspectFill)
         ])
+        if cacheOnly { imageRequest.options.insert(.returnCacheDataDontLoad) }
+        return imageRequest
     }
 
     /// Use decoded memory only during rendering. Disk reads and decoding stay
@@ -306,22 +300,27 @@ struct BookCoverImage: View {
             if let image = loader.image ?? Self.cachedImage(urls: key.urls, width: width, height: height, pipeline: Self.pipeline) {
                 Image(uiImage: image).resizable().aspectRatio(contentMode: .fill)
             } else {
-                Rectangle().fill(Color.velvet.opacity(0.3))
+                Rectangle().fill(Color.coverPlaceholder)
                     .overlay {
                         if loader.isLoading {
                             ProgressView().tint(.paper)
                         } else {
-                            Image(systemName: "book.closed").foregroundColor(.ghost)
+                            DesignSystemIconView(.bookPlaceholder).foregroundColor(.ghost)
                         }
                     }
             }
         }
         .frame(width: width, height: height)
-        .cornerRadius(8)
+        .cornerRadius(TextualLayout.coverRadius)
         .clipped()
         .shadow(color: .inkwell.opacity(0.1), radius: 4, x: 0, y: 2)
         .task(id: key) {
-            let workingURL = await loader.load(urls: key.urls, identity: key.identity, imageLoader: { value in
+            let workingURL = await loader.load(urls: key.urls, identity: key.identity, cachedImageLoader: { value in
+                guard let request = Self.imageRequest(value, width: width, height: height, cacheOnly: true) else {
+                    throw URLError(.badURL)
+                }
+                return try await Self.pipeline.image(for: request)
+            }, imageLoader: { value in
                 guard let request = Self.imageRequest(value, width: width, height: height) else { throw URLError(.badURL) }
                 return try await Self.pipeline.image(for: request)
             }, replacements: { try await BookCatalogService.shared.replacementCoverURLs(for: $0) },

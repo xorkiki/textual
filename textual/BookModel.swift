@@ -15,6 +15,8 @@ final class Book {
     var author: String
     var isbn: String
     var coverURL: String
+    /// Nil for older entries whose original save date was never recorded.
+    var addedAt: Date? = nil
     /// Successfully loaded fallback cover, kept locally across catalog syncs.
     var resolvedCoverURL: String? = nil
     /// Catalog ID: a Google volume ID or a namespaced openlibrary: work ID.
@@ -35,8 +37,10 @@ final class Book {
     /// Private import provenance and reading history. Lives in this account's store.
     var storyGraphData: Data? = nil
 
+    @Transient private var readingHistoryCache = ReadingHistoryCache()
+
     var importedReading: StoryGraphReadingData? {
-        storyGraphData.flatMap { try? JSONDecoder().decode(StoryGraphReadingData.self, from: $0) }
+        readingHistoryCache.read(storyGraphData)
     }
 
     // Account-local sync outbox. `id` stays stable even when a duplicate remote
@@ -65,6 +69,7 @@ final class Book {
         tags: [Tag] = []
     ) {
         self.id = id
+        self.addedAt = Date()
         self.title = title
         self.author = author
         self.isbn = isbn
@@ -132,5 +137,21 @@ extension Book {
         self.isbn = codable.isbn
         self.coverURL = codable.coverURL
         self.googleBooksVolumeId = codable.googleBooksVolumeId
+    }
+}
+
+/// Model-lifetime memoization; raw-data comparison also handles rollback and remote merges.
+/// Mutating this reference never publishes an observation change or touches persistence.
+final class ReadingHistoryCache {
+    private var input: Data?
+    private var value: StoryGraphReadingData?
+    private var hasValue = false
+
+    func read(_ data: Data?) -> StoryGraphReadingData? {
+        if hasValue, input == data { return value }
+        input = data
+        value = data.flatMap { try? JSONDecoder().decode(StoryGraphReadingData.self, from: $0) }
+        hasValue = true
+        return value
     }
 }

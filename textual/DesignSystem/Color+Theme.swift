@@ -17,7 +17,7 @@ extension Color {
     
     // MARK: - Primary
     static let bloodletter = Color(hex: "4C1308")
-    static let bloodletterFaded = Color(hex: "4C1308").opacity(0.3)
+    static let bloodletterFaded = Color(hex: "200F0C") // Bloodletter at 30% over inkwell, flattened.
     
     // MARK: - Accents
     static let moss = Color(hex: "4B5A41")
@@ -25,6 +25,12 @@ extension Color {
     static let duskpetal = Color(hex: "452C42")
     static let clayhearth = Color(hex: "B4683C")
     
+    // MARK: - Shared surfaces and feedback
+    static let controlSurface = Color(hex: "151515") // Velvet at 35% over inkwell, flattened.
+    static let coverPlaceholder = Color(hex: "141414") // Velvet at 30% over inkwell, flattened.
+    static let readerCardSurface = Color(hex: "20241D") // Moss at 30% over inkwell, flattened.
+    static let errorText = Color.red
+
     // MARK: - Hex Initializer
     init(hex: String) {
         let hex = hex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)

@@ -7,6 +7,7 @@
 
 import Foundation
 import Combine
+import Observation
 import SwiftData
 
 @MainActor
@@ -150,7 +151,8 @@ final class BookDetailViewModel: ObservableObject {
                 averageRating: info?.averageRating,
                 ratingsCount: info?.ratingsCount,
                 categories: info?.categories?.isEmpty == false ? info?.categories : cachedVolume(book: book)?.volumeInfo?.categories,
-                pageCount: info?.pageCount ?? cachedVolume(book: book)?.volumeInfo?.pageCount
+                pageCount: info?.pageCount ?? cachedVolume(book: book)?.volumeInfo?.pageCount,
+                mainCategory: info?.mainCategory ?? cachedVolume(book: book)?.volumeInfo?.mainCategory
             )
         )
     }
@@ -213,5 +215,119 @@ final class BookDetailViewModel: ObservableObject {
         BookDetailPresentation.categories(item.volumeInfo?.categories ?? [],
                                           title: item.volumeInfo?.title,
                                           description: item.volumeInfo?.description)
+    }
+}
+
+// MARK: - Reusable review editor state
+// Kept in this existing file so the feature needs no Xcode file registration.
+@MainActor
+@Observable
+final class ReaderReviewEditorModel {
+    let book: Book
+    let store: ReaderReviewStore
+    let repository: LibraryRepository?
+    var content = ReaderReviewContent()
+    var isBusy = false
+    var message: String?
+    var draft: ReaderReviewDraft?
+    var didSave = false
+
+    init(book: Book, store: ReaderReviewStore, repository: LibraryRepository?) {
+        self.book = book; self.store = store; self.repository = repository
+        reload()
+    }
+    var presentation: ReaderReviewPresentation { .init(book: book, draft: draft) }
+    var canSave: Bool { content.hasAssessment && content.body.unicodeScalars.count <= 20_000 && !isBusy }
+    var hasConflict: Bool { draft?.conflict != nil }
+    var hasPending: Bool { draft?.pending != nil }
+
+    func update(_ value: ReaderReviewContent) {
+        content = value; didSave = false
+        guard value.body.unicodeScalars.count <= 20_000 else {
+            message = "Keep your review under 20,000 characters. Your last valid draft is saved."
+            return
+        }
+        do { draft = try store.saveDraft(value, for: book); message = nil }
+        catch { message = "Your draft couldn’t be saved. Keep this editor open and try again." }
+    }
+    func load() async {
+        guard !isBusy else { return }
+        isBusy = true
+        defer { isBusy = false }
+        await repository?.synchronize()
+        do {
+            try await store.loadRemote(for: book)
+            reload(); message = nil
+        } catch { reload(); show(error) }
+    }
+    func save() async {
+        guard canSave else { return }
+        isBusy = true; message = nil
+        defer { isBusy = false }
+        do {
+            if book.importedReading?.status != "read", let context = book.modelContext {
+                try BookReadingActions.setStatus("read", book: book, context: context, repository: repository)
+            }
+            draft = try store.saveDraft(content, for: book)
+            await repository?.synchronize()
+            if draft?.hasLoadedRemote != true { try await store.loadRemote(for: book) }
+            try store.queueSubmission(for: book)
+            await repository?.synchronize()
+            try await store.flush()
+            reload()
+            if hasConflict { message = "This review changed on another device. Choose which version to keep." }
+            else if hasPending { message = "Saved on this device. Your review is waiting to sync." }
+            else { didSave = true }
+        } catch { reload(); show(error) }
+    }
+    func retry() async {
+        guard !isBusy else { return }
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            await repository?.synchronize()
+            try await store.flush()
+            reload(); message = hasPending ? "Your review is still waiting to sync." : nil
+        } catch { reload(); show(error) }
+    }
+    func resolve(keepLocal: Bool) {
+        do {
+            try store.resolveConflict(for: book, keepLocal: keepLocal)
+            reload()
+            message = keepLocal ? "Your draft is ready. Save review to use these changes." : nil
+        } catch { show(error) }
+    }
+    func remove() async {
+        guard !isBusy else { return }
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            await repository?.synchronize()
+            if draft?.hasLoadedRemote != true { try await store.loadRemote(for: book) }
+            try store.queueSubmission(for: book, deleted: true)
+            draft = try store.saveDraft(.init(), for: book)
+            try await store.flush()
+            reload()
+            didSave = !hasConflict && !hasPending
+        } catch { reload(); show(error) }
+    }
+    private func reload() {
+        do { draft = try store.draft(for: book); content = presentation.editorContent }
+        catch { show(error) }
+    }
+    private func show(_ error: Error) {
+        if error is CancellationError { return }
+        switch error {
+        case ReaderReviewError.conflict:
+            message = "This review changed on another device. Choose which version to keep."
+        case ReaderReviewError.submissionPending:
+            message = "A saved version is waiting to sync. Retry it before saving more changes."
+        case ReaderReviewError.bookNotSynced, ReaderReviewError.loadRemoteFirst:
+            message = "Your draft is on this device. Connect to sync this book, then save your review."
+        default:
+            message = hasPending
+                ? "Saved on this device. We’ll retry syncing your review when you reconnect."
+                : "Couldn’t connect to reviews. Your draft is on this device; try again to sync."
+        }
     }
 }

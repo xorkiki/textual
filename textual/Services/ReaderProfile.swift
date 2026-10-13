@@ -110,7 +110,7 @@ enum ReaderShelf {
 /// Deterministic, on-device copy: stable until the actual reading evidence changes.
 /// Genres, moods, and book pace describe books, never a person's sensitive traits.
 enum ReaderPersonality {
-    struct Evidence {
+    struct Evidence: Sendable {
         var completedReads: Int
         var genres: Set<String>
         var moods: [String]

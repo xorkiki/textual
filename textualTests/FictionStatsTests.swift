@@ -49,15 +49,36 @@ struct FictionStatsTests {
         #expect(StatsMetadataCache.needsClassification(book, now: now))
         book.cachedStatsClassification = try JSONEncoder().encode(BookCatalogService.ClassificationEvidence(categories: ["Fantasy"], source: "openlibrary"))
         book.statsClassificationCheckedAt = now
+        book.statsClassificationVersion = StatsMetadataCache.classificationVersion
         #expect(StatsMetadataCache.fictionKind(book) == .fiction)
         #expect(!StatsMetadataCache.needsClassification(book, now: now))
         #expect(StatsMetadataCache.needsClassification(book, googleConfigured: true, now: now))
         book.statsClassificationUsedGoogleKey = true
-        book.statsClassificationVersion = 1
+        book.statsClassificationVersion = StatsMetadataCache.classificationVersion
         #expect(!StatsMetadataCache.needsClassification(book, googleConfigured: true, now: now))
-        #expect(StatsMetadataCache.needsClassification(book, now: now.addingTimeInterval(86_401)))
-        book.cachedStatsClassification = try JSONEncoder().encode(BookCatalogService.ClassificationEvidence(categories: ["Fiction"], source: "google"))
         #expect(!StatsMetadataCache.needsClassification(book, now: now.addingTimeInterval(86_401)))
+        book.cachedStatsClassification = try JSONEncoder().encode(BookCatalogService.ClassificationEvidence(categories: ["Fiction"], source: "google"))
+        #expect(StatsMetadataCache.needsClassification(book, now: now.addingTimeInterval(86_401)))
+    }
+
+    @Test func supplementalCatalogSubjectsCannotOverrideConflictingClassification() {
+        let original = BookCatalogService.ClassificationEvidence(categories: ["Fiction"], source: "google")
+        let conflicting = BookCatalogService.ClassificationEvidence(categories: ["Nonfiction", "History"], source: "openlibrary")
+        let result = original.supplemented(with: conflicting)
+        #expect(result.fictionKind == .fiction)
+        #expect(result.genres.isEmpty)
+        #expect(result.openLibraryCategories == nil)
+    }
+
+    @Test @MainActor func oldBroadCacheRefreshesOnceThenUsesDailyBackoff() throws {
+        let book = Book(title: "Example", author: "Writer", isbn: "")
+        book.cachedStatsClassification = try JSONEncoder().encode(BookCatalogService.ClassificationEvidence(categories: ["Fiction"], source: "google"))
+        let now = Date(); book.statsClassificationCheckedAt = now
+        book.statsClassificationVersion = 1; book.statsClassificationUsedGoogleKey = true
+        #expect(StatsMetadataCache.needsClassification(book, googleConfigured: true, now: now))
+        book.statsClassificationVersion = StatsMetadataCache.classificationVersion
+        #expect(!StatsMetadataCache.needsClassification(book, googleConfigured: true, now: now))
+        #expect(StatsMetadataCache.needsClassification(book, googleConfigured: true, now: now.addingTimeInterval(86401)))
     }
 
     @Test func classifiedAndUnclassifiedReadsAlwaysReconcile() {

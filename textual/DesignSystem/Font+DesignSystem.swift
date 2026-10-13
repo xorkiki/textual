@@ -1,157 +1,138 @@
-//
-//  Font+DesignSystem.swift
-//  textual
-//
-//  Created by kiki o on 1/26/26.
-//
-
 import SwiftUI
 import UIKit
 
-enum DesignSystemFont {
-    case displayHero
-    case heading1
-    case heading2
-    case heading3
-    case subheadingLarge
-    case subheadingSmall
-    case bodyLarge
-    case bodyMedium
-    case bodySmall
-    case uiButton
-    case uiLabel
+/// Every font family and text role lives here, including intentional brand variants.
+enum TextualFontFamily: String {
+    case editorial = "CormorantGaramond-Regular"
+    case editorialEmphasis = "CormorantGaramond-SemiBold"
+    case laLuxesSerif = "LaLuxesSerifW05-Regular"
+    case handwritten = "LamarPen-Regular"
+    case body = "PlusJakartaSans-Regular"
+    case medium = "PlusJakartaSans-Medium"
+}
+
+enum DesignSystemFont: CaseIterable {
+    case displayHero, brandDisplay, heading1, heading2, heading3, sectionHeading
+    case subheadingLarge, subheadingSmall
+    case bodyLarge, bodyMedium, bodySmall, caption, uiButton, uiLabel
+    case metric, metricLabel, chartAnnotation, fieldLabel, fieldInput
+    case wordmark, welcomeTitle, welcomeTagline
+
+    var family: TextualFontFamily {
+        switch self {
+        case .displayHero, .heading1, .heading2, .heading3, .sectionHeading,
+             .metric, .wordmark, .welcomeTitle, .welcomeTagline: return .editorial
+        case .brandDisplay: return .laLuxesSerif
+        case .subheadingLarge, .subheadingSmall: return .handwritten
+        case .uiButton: return .medium
+        default: return .body
+        }
+    }
+
+    var size: CGFloat {
+        switch self {
+        case .displayHero, .brandDisplay: return 64
+        case .heading1: return 48
+        case .heading2: return 36
+        case .heading3: return 28
+        case .sectionHeading: return 26
+        case .subheadingLarge: return 24
+        case .subheadingSmall: return 18
+        case .bodyLarge: return 18
+        case .bodyMedium, .uiButton: return 16
+        case .bodySmall: return 14
+        case .caption: return 13
+        case .uiLabel: return 12
+        case .metric: return 38
+        case .metricLabel: return 11
+        case .chartAnnotation: return 9
+        case .fieldLabel: return 10
+        case .fieldInput: return 21
+        case .wordmark: return 18
+        case .welcomeTitle: return 76
+        case .welcomeTagline: return 38
+        }
+    }
+
+    var relativeTo: Font.TextStyle {
+        switch self {
+        case .displayHero, .brandDisplay, .heading1, .welcomeTitle, .metric: return .largeTitle
+        case .heading2, .welcomeTagline: return .title
+        case .heading3, .sectionHeading: return .title2
+        case .subheadingLarge, .subheadingSmall, .wordmark: return .headline
+        case .caption, .uiLabel, .metricLabel, .fieldLabel: return .caption
+        case .chartAnnotation: return .caption2
+        default: return .body
+        }
+    }
+
+    var uiTextStyle: UIFont.TextStyle {
+        switch relativeTo {
+        case .largeTitle: return .largeTitle
+        case .title: return .title1
+        case .title2: return .title2
+        case .headline: return .headline
+        case .caption: return .caption1
+        case .caption2: return .caption2
+        default: return .body
+        }
+    }
+
+    var baseUIFont: UIFont {
+        UIFont(name: family.rawValue, size: size) ?? UIFont.systemFont(ofSize: size)
+    }
+
+    var uiFont: UIFont {
+        UIFontMetrics(forTextStyle: uiTextStyle).scaledFont(for: baseUIFont)
+    }
 }
 
 extension Font {
     static func designSystem(_ style: DesignSystemFont) -> Font {
-        // Font files are registered in Info.plist at Resources/Fonts/
-        // Font names should match the PostScript name or full name from the font file
-        switch style {
-        case .displayHero:
-            return .custom("CormorantGaramond-Regular", size: 64)
-        case .heading1:
-            return .custom("CormorantGaramond-Regular", size: 48)
-        case .heading2:
-            return .custom("CormorantGaramond-Regular", size: 36)
-        case .heading3:
-            return .custom("CormorantGaramond-Regular", size: 28)
-        case .subheadingLarge:
-            return .custom("LamarPen-Regular", size: 24)
-        case .subheadingSmall:
-            return .custom("LamarPen-Regular", size: 18)
-        case .bodyLarge:
-            return .custom("PlusJakartaSans-Regular", size: 18)
-        case .bodyMedium:
-            return .custom("PlusJakartaSans-Regular", size: 16)
-        case .bodySmall:
-            return .custom("PlusJakartaSans-Regular", size: 14)
-        case .uiButton:
-            return .custom("PlusJakartaSans-Medium", size: 16)
-        case .uiLabel:
-            return .custom("PlusJakartaSans-Regular", size: 12)
-        }
+        .custom(style.family.rawValue, size: style.size, relativeTo: style.relativeTo)
     }
-    
-    /// Helper to verify if a font is available
+
     static func isFontAvailable(_ fontName: String) -> Bool {
-        return UIFont(name: fontName, size: 17) != nil
-    }
-}
-
-extension DesignSystemFont {
-    /// Returns the corresponding UIFont for use in attributed strings (e.g. HTML-rendered body text).
-    var uiFont: UIFont {
-        let (name, size) = fontNameAndSize
-        return UIFont(name: name, size: size) ?? UIFont.systemFont(ofSize: size)
-    }
-
-    private var fontNameAndSize: (name: String, size: CGFloat) {
-        switch self {
-        case .displayHero: return ("CormorantGaramond-Regular", 64)
-        case .heading1: return ("CormorantGaramond-Regular", 48)
-        case .heading2: return ("CormorantGaramond-Regular", 36)
-        case .heading3: return ("CormorantGaramond-Regular", 28)
-        case .subheadingLarge: return ("LamarPen-Regular", 24)
-        case .subheadingSmall: return ("LamarPen-Regular", 18)
-        case .bodyLarge: return ("PlusJakartaSans-Regular", 18)
-        case .bodyMedium: return ("PlusJakartaSans-Regular", 16)
-        case .bodySmall: return ("PlusJakartaSans-Regular", 14)
-        case .uiButton: return ("PlusJakartaSans-Medium", 16)
-        case .uiLabel: return ("PlusJakartaSans-Regular", 12)
-        }
+        UIFont(name: fontName, size: 17) != nil
     }
 }
 
 extension View {
     func textStyle(_ style: DesignSystemFont) -> some View {
-        self.modifier(DesignSystemTextModifier(style: style))
+        // Let the registered font supply its natural line height at every text size.
+        font(.designSystem(style))
     }
-    
-    /// Applies CormorantGaramond font to navigation titles using custom toolbar title
+
     func navigationTitleFont() -> some View {
-        self.modifier(NavigationTitleFontModifier())
+        toolbarColorScheme(.dark, for: .navigationBar)
+    }
+
+    func textualScreenDefaults() -> some View {
+        font(.designSystem(.bodyMedium))
+            .foregroundStyle(Color.paper)
+            .tint(.paper)
+            .preferredColorScheme(.dark)
     }
 }
 
-struct DesignSystemTextModifier: ViewModifier {
-    let style: DesignSystemFont
-    
-    var fontSize: CGFloat {
-        switch style {
-        case .displayHero: return 64
-        case .heading1: return 48
-        case .heading2: return 36
-        case .heading3: return 28
-        case .subheadingLarge: return 24
-        case .subheadingSmall: return 18
-        case .bodyLarge: return 18
-        case .bodyMedium: return 16
-        case .bodySmall: return 14
-        case .uiButton: return 16
-        case .uiLabel: return 12
-        }
-    }
-    
-    var lineHeight: CGFloat {
-        switch style {
-        case .displayHero: return 48
-        case .heading1: return 36
-        case .heading2: return 28
-        case .heading3: return 24
-        case .subheadingLarge: return 20
-        case .subheadingSmall: return 16
-        case .bodyLarge: return 16
-        case .bodyMedium: return 14
-        case .bodySmall: return 12
-        case .uiButton: return 14
-        case .uiLabel: return 10
-        }
-    }
-    
-    var fontName: String {
-        switch style {
-        case .displayHero, .heading1, .heading2, .heading3:
-            return "CormorantGaramond-Regular"
-        case .subheadingLarge, .subheadingSmall:
-            return "LamarPen-Regular"
-        case .bodyLarge, .bodyMedium, .bodySmall, .uiLabel:
-            return "PlusJakartaSans-Regular"
-        case .uiButton:
-            return "PlusJakartaSans-Medium"
-        }
-    }
-    
-    func body(content: Content) -> some View {
-        content
-            .font(.custom(fontName, size: fontSize))
-            .lineSpacing(lineHeight - fontSize)
-            .fixedSize(horizontal: false, vertical: true)
-    }
-}
+/// The library card keeps its printed proportions; it shares the global font families.
+enum ReaderCardTypography {
+    case brand, title, name, sentence, count, label, monogram
 
-struct NavigationTitleFontModifier: ViewModifier {
-    func body(content: Content) -> some View {
-        content
-            .toolbarColorScheme(.dark, for: .navigationBar)
+    private var specification: (TextualFontFamily, CGFloat) {
+        switch self {
+        case .brand: return (.editorial, 28)
+        case .title: return (.editorialEmphasis, 29)
+        case .name: return (.editorial, 31)
+        case .sentence: return (.editorial, 15.5)
+        case .count: return (.editorial, 23)
+        case .label: return (.body, 7)
+        case .monogram: return (.editorial, 64)
+        }
+    }
+
+    func font(scale: CGFloat) -> Font {
+        let (family, size) = specification
+        return .custom(family.rawValue, fixedSize: size * scale)
     }
 }

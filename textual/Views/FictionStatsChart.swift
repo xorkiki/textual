@@ -2,7 +2,7 @@ import SwiftUI
 import Charts
 
 /// Only explicit catalog classifications are used; an unrecognized subject stays unknown.
-enum BookFictionKind: String, CaseIterable {
+enum BookFictionKind: String, CaseIterable, Sendable {
     case fiction = "Fiction", nonfiction = "Nonfiction"
 
     static func classify(_ categories: [String]) -> Self? {
@@ -43,15 +43,15 @@ enum BookFictionKind: String, CaseIterable {
 
     var color: Color {
         switch self {
-        case .fiction: return Color(red: 26 / 255, green: 38 / 255, blue: 54 / 255)
-        case .nonfiction: return Color(red: 180 / 255, green: 104 / 255, blue: 60 / 255)
+        case .fiction: return Color.inkstorm
+        case .nonfiction: return Color.clayhearth
         }
     }
 }
 
 /// Shared scope for every statistic on the Stats page. All time includes undated books;
 /// dated charts use only recorded events, never invented completion dates.
-struct ReadingStatsFilter: Equatable {
+struct ReadingStatsFilter: Hashable, Sendable {
     let status: String
     let year: Int?
 
@@ -121,18 +121,20 @@ struct ReadingStatsFilter: Equatable {
 }
 
 /// One snapshot drives totals, both charts, and their shared filter scope.
-struct ReadingStatsSnapshot {
-    struct Entry {
+struct ReadingStatsSnapshot: Sendable {
+    struct Entry: Sendable {
         let dates: [Date]
         let count: Int
         let pages: Int?
         let kind: BookFictionKind?
+        var pagesEstimated = false
     }
     struct Bucket: Identifiable {
         let date: Date
         var books = 0
         var pages = 0
         var knownPages = 0
+        var estimatedPages = 0
         var id: Date { date }
     }
     let entries: [Entry]
@@ -141,7 +143,9 @@ struct ReadingStatsSnapshot {
     var pageCount: Int { entries.reduce(0) { $0 + ($1.pages ?? 0) * $1.count } }
     var unclassifiedCount: Int { entries.filter { $0.kind == nil }.reduce(0) { $0 + $1.count } }
     var hasPages: Bool { entries.contains { $0.pages != nil } }
-    var completePages: Bool { !entries.isEmpty && entries.allSatisfy { $0.pages != nil } }
+    var completePages: Bool { !entries.isEmpty && entries.allSatisfy { $0.pages != nil && !$0.pagesEstimated } }
+    var estimatedPageReads: Int { entries.filter(\.pagesEstimated).reduce(0) { $0 + $1.count } }
+    var pageTotalDetail: String { estimatedPageReads > 0 ? "Includes estimates" : (completePages ? "Total" : "Partial") }
     func count(_ kind: BookFictionKind) -> Int { entries.filter { $0.kind == kind }.reduce(0) { $0 + $1.count } }
 
     var buckets: [Bucket] {
@@ -166,7 +170,10 @@ struct ReadingStatsSnapshot {
                 let key = calendar.dateInterval(of: unit, for: date)!.start
                 var bucket = totals[key, default: Bucket(date: key)]
                 bucket.books += 1
-                if let pages = entry.pages { bucket.pages += pages; bucket.knownPages += 1 }
+                if let pages = entry.pages {
+                    bucket.pages += pages
+                    if entry.pagesEstimated { bucket.estimatedPages += 1 } else { bucket.knownPages += 1 }
+                }
                 totals[key] = bucket
             }
         }
@@ -176,43 +183,77 @@ struct ReadingStatsSnapshot {
 }
 
 /// All chart data is derived together from the active account's library and scope.
-@MainActor
-struct UserReadingStats {
+struct UserReadingStats: Sendable {
     let totals: ReadingStatsSnapshot
     let genres: [GenreStat]
     let moods: [MoodStat]
     let paces: [PaceStat]
     let averageDays: Double?
 
-    init(books: [Book], filter: ReadingStatsFilter) {
-        let books = books.filter { book in
-            !book.isRemovedFromLibrary && book.importedReading.map { filter.count($0) > 0 } == true
-        }
-        let readings = books.compactMap(\.importedReading)
-        totals = ReadingStatsSnapshot(entries: books.compactMap { book in
-            guard let reading = book.importedReading else { return nil }
+    @MainActor init(books: [Book], filter: ReadingStatsFilter) {
+        self.init(entries: books.filter { !$0.isRemovedFromLibrary }.map { ReadingBookSnapshot(ReadingBookInput($0)) }, filter: filter)
+    }
+
+    init(entries: [ReadingBookSnapshot], filter: ReadingStatsFilter) {
+        let entries = entries.filter { $0.reading.map { filter.count($0) > 0 } == true }
+        let readings = entries.compactMap(\.reading)
+        totals = ReadingStatsSnapshot(entries: entries.compactMap { entry in
+            guard let reading = entry.reading else { return nil }
             let dates = filter.dates(for: reading)
             return .init(dates: filter.status == "read" ? dates : Array(dates.sorted().suffix(1)),
-                         count: filter.count(reading), pages: StatsMetadataCache.pageCount(book),
-                         kind: StatsMetadataCache.fictionKind(book))
+                         count: filter.count(reading), pages: entry.statsPages, kind: entry.statsKind, pagesEstimated: entry.pageEstimateReason != nil)
         }, year: filter.year)
-        genres = GenreStat.counts(books.compactMap { book in
-            guard let reading = book.importedReading else { return nil }
-            return (StatsMetadataCache.genres(book), filter.count(reading))
+        genres = GenreStat.counts(entries.compactMap { entry in
+            entry.reading.map { (entry.statsGenres, filter.count($0)) }
         })
-        moods = MoodStat.counts(readings: readings, filter: filter)
-        paces = PaceStat.counts(readings: readings, filter: filter)
+        moods = MoodStat.counts(entries: entries, filter: filter)
+        paces = PaceStat.counts(entries: entries, filter: filter)
         averageDays = filter.averageDaysToFinish(readings)
+    }
+}
+
+struct CachedReadingStatsCharts: View {
+    let books: [Book]
+    let filter: ReadingStatsFilter
+    @Environment(\.readingLibrary) private var cache
+    @State private var prepared: UserReadingStats?
+    @State private var preparedFilter: ReadingStatsFilter?
+    private struct Key: Equatable { let revision: Int; let filter: ReadingStatsFilter }
+
+    var body: some View {
+        Group {
+            if let prepared, preparedFilter == filter {
+                ReadingStatsCharts(books: books, filter: filter, stats: prepared)
+            } else {
+                ProgressView().frame(maxWidth: .infinity, minHeight: 240).tint(.paper)
+            }
+        }
+        .task(id: Key(revision: cache?.snapshot.revision ?? 0, filter: filter)) {
+            let result: UserReadingStats
+            if let cache {
+                guard cache.isReady else { return }
+                result = await cache.worker.stats(for: cache.snapshot, filter: filter)
+            } else {
+                // Standalone previews have no account host.
+                let inputs = books.filter { !$0.isRemovedFromLibrary }.map(ReadingBookInput.init)
+                let worker = ReadingLibraryWorker()
+                guard let snapshot = try? await worker.prepare(inputs) else { return }
+                result = await worker.stats(for: snapshot, filter: filter)
+            }
+            guard !Task.isCancelled else { return }
+            prepared = result
+            preparedFilter = filter
+        }
     }
 }
 
 struct ReadingStatsCharts: View {
     let books: [Book]
     let filter: ReadingStatsFilter
+    let stats: UserReadingStats
     @State private var selectedCategory: StatsBookCategory?
 
     var body: some View {
-        let stats = UserReadingStats(books: books, filter: filter)
         let data = stats.totals
         VStack(alignment: .leading, spacing: 36) {
             summary(data, average: stats.averageDays)
@@ -281,7 +322,11 @@ struct ReadingStatsCharts: View {
             StatsSummaryLayout() {
                 metric(data.bookCount.formatted(), label: bookLabel, accent: .duskpetal)
                     .padding(.horizontal, 12)
-                metric(data.hasPages ? data.pageCount.formatted() : "—", label: pageLabel, accent: .moss, detail: data.completePages ? "Total" : "Partial")
+                Button { selectedCategory = .pages } label: {
+                    metric(data.hasPages ? data.pageCount.formatted() : "—", label: pageLabel, accent: .moss, detail: data.pageTotalDetail)
+                }
+                    .buttonStyle(.plain)
+                    .accessibilityHint("Show page counts and estimates for matching books")
                     .padding(.horizontal, 12)
                     .overlay(alignment: .leading) { summaryDivider }
                 metric(average.map { $0.formatted(.number.precision(.fractionLength(0...1))) } ?? "—",
@@ -291,7 +336,11 @@ struct ReadingStatsCharts: View {
             }
             VStack(alignment: .leading, spacing: 24) {
                 metric(data.bookCount.formatted(), label: bookLabel, accent: .duskpetal)
-                metric(data.hasPages ? data.pageCount.formatted() : "—", label: pageLabel, accent: .moss, detail: data.completePages ? "Total" : "Partial")
+                Button { selectedCategory = .pages } label: {
+                    metric(data.hasPages ? data.pageCount.formatted() : "—", label: pageLabel, accent: .moss, detail: data.pageTotalDetail)
+                }
+                    .buttonStyle(.plain)
+                    .accessibilityHint("Show page counts and estimates for matching books")
                 metric(average.map { $0.formatted(.number.precision(.fractionLength(0...1))) } ?? "—",
                        label: "Days to finish", accent: .clayhearth, detail: "Average")
             }
@@ -299,7 +348,7 @@ struct ReadingStatsCharts: View {
         .padding(.vertical, 24)
         .padding(.horizontal, 4)
         .contentShape(Rectangle())
-        .background(Color.velvet.opacity(0.35), in: RoundedRectangle(cornerRadius: 20))
+        .background(Color.controlSurface, in: RoundedRectangle(cornerRadius: TextualLayout.menuRadius))
     }
 
     private var summaryDivider: some View {
@@ -311,17 +360,17 @@ struct ReadingStatsCharts: View {
             Capsule().fill(accent).frame(width: 20, height: 3)
                 .padding(.bottom, 3)
             Text(value)
-                .font(.custom("CormorantGaramond-Regular", size: 38, relativeTo: .largeTitle))
+                .font(.designSystem(.metric))
                 .monospacedDigit()
                 .foregroundStyle(Color.paper)
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
             Text(label)
-                .font(.custom("PlusJakartaSans-Regular", size: 11, relativeTo: .caption))
+                .font(.designSystem(.metricLabel))
                 .foregroundStyle(Color.paper)
                 .fixedSize(horizontal: true, vertical: false)
             Text(detail.uppercased())
-                .font(.custom("PlusJakartaSans-Regular", size: 9, relativeTo: .caption2))
+                .font(.designSystem(.chartAnnotation))
                 .tracking(1.2)
                 .foregroundStyle(Color.ghost)
         }
@@ -332,18 +381,18 @@ struct ReadingStatsCharts: View {
     }
 
     private func heading(_ title: String) -> some View {
-        Text(title).font(.custom("CormorantGaramond-Regular", size: 26, relativeTo: .title2)).foregroundStyle(Color.paper)
+        Text(title).font(.designSystem(.sectionHeading)).foregroundStyle(Color.paper)
     }
     private func legend(_ title: String, color: Color) -> some View {
         HStack(spacing: 8) {
             Circle().fill(color).frame(width: 12, height: 12)
-            Text(title).font(.custom("PlusJakartaSans-Regular", size: 13, relativeTo: .caption)).foregroundStyle(Color.paper)
+            Text(title).font(.designSystem(.caption)).foregroundStyle(Color.paper)
         }
     }
     private var emptyChart: some View {
         VStack(spacing: 12) {
             Text("No data for this selection yet.")
-                .font(.custom("PlusJakartaSans-Regular", size: 14, relativeTo: .body)).foregroundStyle(Color.ghost)
+                .font(.designSystem(.bodySmall)).foregroundStyle(Color.ghost)
         }.frame(maxWidth: .infinity, minHeight: 200)
     }
 

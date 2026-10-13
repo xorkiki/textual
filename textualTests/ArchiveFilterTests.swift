@@ -53,6 +53,40 @@ struct ArchiveFilterTests {
         #expect(selection == ArchiveFilter(status: .dnf, mood: "Dark"))
     }
 
+    @Test func dateSortingUsesOriginalImportDatesAndPutsUnknownDatesLast() throws {
+        let imported = try bookWithDate("Zebra", importedDate: "2020/01/02", localDate: Date(timeIntervalSince1970: 2_000_000_000))
+        let recent = try bookWithDate("Apple", importedDate: nil, localDate: Date(timeIntervalSince1970: 1_800_000_000))
+        let unknown = try bookWithDate("First alphabetically", importedDate: nil, localDate: nil)
+        let books = [unknown, recent, imported]
+        #expect(ArchiveSort.recentlyAdded.sorted(books).map(\.title) == ["Apple", "Zebra", "First alphabetically"])
+        #expect(ArchiveSort.oldestAdded.sorted(books).map(\.title) == ["Zebra", "Apple", "First alphabetically"])
+        #expect(ArchiveSort.title.sorted(books).map(\.title) == ["Apple", "First alphabetically", "Zebra"])
+    }
+
+    @Test func invalidDatesFallBackAndEqualDatesHaveDeterministicOrder() throws {
+        let date = Date(timeIntervalSince1970: 1_800_000_000)
+        let z = try bookWithDate("Zebra", importedDate: "2024-02-31", localDate: date)
+        let a = try bookWithDate("Apple", importedDate: "not a date", localDate: date)
+        #expect(ArchiveSort.dateAdded(to: z) == date)
+        #expect(ArchiveSort.oldestAdded.sorted([z, a]).map(\.id) == [a.id, z.id])
+        #expect(ArchiveSort.recentlyAdded.sorted([z, a]).map(\.id) == [a.id, z.id])
+        var reading = try #require(a.importedReading)
+        reading.libraryAddedAt = date.addingTimeInterval(-500)
+        a.storyGraphData = try JSONEncoder().encode(reading)
+        a.addedAt = nil
+        #expect(ArchiveSort.dateAdded(to: a) == reading.libraryAddedAt)
+        #expect(ArchiveSort.oldestAdded.sorted([z, a]).map(\.id) == [a.id, z.id])
+    }
+
+    private func bookWithDate(_ title: String, importedDate: String?, localDate: Date?) throws -> Book {
+        let book = Book(title: title, author: "Author", isbn: title)
+        book.addedAt = localDate
+        book.storyGraphData = try JSONEncoder().encode(StoryGraphReadingData(sourceKey: title, status: "to-read",
+            dateAdded: importedDate, lastDateRead: nil, periods: [], readCount: nil, rating: nil, format: "",
+            moods: [], pace: "", tags: [], owned: nil, originalFields: [:]))
+        return book
+    }
+
     private func book(_ title: String, status: String, categories: [String], moods: [String], pace: String,
                       catalogID: String = "google-book") throws -> Book {
         let book = Book(title: title, author: "Author", isbn: title)

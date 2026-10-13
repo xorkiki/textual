@@ -3,6 +3,8 @@ import Foundation
 /// Shared catalog repository: typed search scopes, provider routing, bounded caches,
 /// and cancellation-aware rate limiting. Views do not choose providers or build URLs.
 actor BookCatalogService {
+    @TaskLocal static var isBackgroundLookup = false
+    private var interactiveWaiters = 0
     static let shared = BookCatalogService(session: makeSession())
     static let pageSize = 20
     static let minimumSearchQueryLength = 3
@@ -41,6 +43,8 @@ actor BookCatalogService {
     private var googleRetryAfter = Date.distantPast
     private var searches: [SearchKey: Cached<SearchPage>] = [:]
     private var details: [String: Cached<BookItem>] = [:]
+    private var workEditionSubjects: [String: Cached<[String]>] = [:]
+    private var workEditionPages: [String: Cached<[Int]>] = [:]
     private struct CoverLookupKey: Hashable {
         let book: BookCoverIdentity
         let provider: Provider
@@ -98,6 +102,11 @@ actor BookCatalogService {
         let ratingsCount: Int?
         let categories: [String]?
         var pageCount: Int? = nil
+        var mainCategory: String? = nil
+
+        var catalogCategories: [String] {
+            Array(Set((categories ?? []) + [mainCategory].compactMap { $0 })).sorted()
+        }
 
         enum CodingKeys: String, CodingKey {
             case title
@@ -110,6 +119,7 @@ actor BookCatalogService {
             case ratingsCount
             case categories
             case pageCount
+            case mainCategory
         }
 
         struct IndustryIdentifier: Codable, Sendable {
@@ -208,7 +218,7 @@ actor BookCatalogService {
             URLQueryItem(name: field, value: query),
             URLQueryItem(name: "limit", value: String(Self.pageSize)),
             URLQueryItem(name: "offset", value: String(offset)),
-            URLQueryItem(name: "fields", value: "key,title,author_name,cover_i")
+            URLQueryItem(name: "fields", value: "key,title,author_name,cover_i,subject")
         ])
         let response: OpenLibrarySearch = try await request(url, catalog: true)
         let items = response.docs.compactMap { document -> BookItem? in
@@ -219,7 +229,7 @@ actor BookCatalogService {
                 title: document.title, subtitle: nil, authors: document.author_name,
                 description: nil, industryIdentifiers: nil,
                 imageLinks: cover.map { .init(thumbnail: $0, smallThumbnail: nil) },
-                averageRating: nil, ratingsCount: nil, categories: nil
+                averageRating: nil, ratingsCount: nil, categories: document.subject
             ))
         }
         return SearchPage(items: uniqueValidItems(items), provider: .openLibrary,
@@ -243,65 +253,275 @@ actor BookCatalogService {
         let source: String
         var editionPages: Int? = nil
         var editionISBN: String? = nil
+        // Keep source boundaries: arbitrary Open Library subjects are not Google genres.
+        var openLibraryCategories: [String]? = nil
+        /// Text from identity-verified catalog records, used only for estimates.
+        var context: [String]? = nil
+        var workPageCounts: [Int]? = nil
+
+        var genres: Set<String> {
+            GenreTaxonomy.normalized(categories, isOpenLibrary: source == "openlibrary")
+                .union(GenreTaxonomy.normalized(openLibraryCategories ?? [], isOpenLibrary: true))
+        }
+        var fictionKind: BookFictionKind? {
+            BookFictionKind.classify(categories) ?? BookFictionKind.classify(openLibraryCategories ?? [])
+        }
+        // Audience or identity labels alone do not finish genre enrichment.
+        var isComplete: Bool {
+            !genres.subtracting(["Young adult", "Middle grade", "Children’s", "LGBTQIA+"]).isEmpty && fictionKind != nil
+        }
+
+        func supplemented(with other: Self) -> Self {
+            if let a = fictionKind, let b = other.fictionKind, a != b { return self }
+            if source == "openlibrary", other.source == "google" {
+                return other.supplemented(with: self)
+            }
+            var result = self
+            if other.source == "openlibrary" {
+                result.openLibraryCategories = Array(Set((openLibraryCategories ?? []) + other.categories + (other.openLibraryCategories ?? []))).sorted()
+            } else if source == "google" {
+                result = Self(categories: Array(Set(categories + other.categories)).sorted(), source: source,
+                              editionPages: editionPages ?? other.editionPages, editionISBN: editionISBN ?? other.editionISBN,
+                              openLibraryCategories: openLibraryCategories)
+            }
+            result.context = Array(Set((context ?? []) + (other.context ?? []))).sorted()
+            result.workPageCounts = Array(Set((workPageCounts ?? []) + (other.workPageCounts ?? []))).sorted()
+            return result
+        }
     }
 
-    /// Classification is work-level metadata. Prefer Google even when an existing
-    /// book was resolved through Open Library; only accept a verified book match.
+    nonisolated static func classificationContext(_ item: BookItem) -> [String] {
+        [item.volumeInfo?.subtitle, item.volumeInfo?.description].compactMap { value in
+            guard let value, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+            return String(value.prefix(12_000))
+        }
+    }
+
+    struct ClassificationLookup: Sendable {
+        let evidence: ClassificationEvidence?
+        let retryRequired: Bool
+        let usedGoogleKey: Bool
+    }
+
     func classification(isbn: String, title: String, author: String,
                         savedCategories: [String], savedSource: String) async throws -> ClassificationEvidence? {
+        try await classificationLookup(isbn: isbn, title: title, author: author,
+            savedCategories: savedCategories, savedSource: savedSource).evidence
+    }
+
+    /// Search identifies candidates; detail records and ISBN-linked editions supply
+    /// classification. An unavailable provider is not a successful negative lookup.
+    func classificationLookup(isbn: String, title: String, author: String,
+                              savedCategories: [String], savedSource: String) async throws -> ClassificationLookup {
         let normalizedISBN = StoryGraphImporter.normalizedISBN(isbn)
-        if Date() >= googleRetryAfter {
-            do {
-                if let normalizedISBN {
-                    do {
-                        let page = try await googleClassificationSearch("isbn:\(normalizedISBN)")
-                        if let evidence = Self.classificationEvidence(page, isbn: normalizedISBN, title: title, author: author, requireISBN: true) {
-                            return evidence
-                        }
-                    } catch let error as ServiceError {
-                        // An ISBN query can fail while a plain title search still works.
-                        if case .httpStatus(let status) = error, (500...599).contains(status) {} else { throw error }
-                    }
-                }
-                try Task.checkCancellation()
-                if !Self.classificationTitle(title).isEmpty && !Self.matchKey(author).isEmpty {
-                    let query = "\(Self.classificationTitle(title)) \(author)"
-                    let page = try await googleClassificationSearch(query)
-                    if let evidence = Self.classificationEvidence(page, isbn: normalizedISBN, title: title, author: author, requireISBN: false) {
-                        return evidence
-                    }
-                }
-            } catch is CancellationError { throw CancellationError() }
-            catch {
-                // Authentication and quota failures affect the project. A transient
-                // per-query server error must not disable every other book lookup.
-                if case ServiceError.httpStatus(let status) = error, [401, 403, 429].contains(status) {
-                    googleRetryAfter = Date().addingTimeInterval(300)
-                }
+        var best: ClassificationEvidence?
+        var hadFailure = false
+        var googleSucceeded = false
+        var googleFailed = Date() < googleRetryAfter
+        var visitedGoogleIDs = Set<String>()
+        func merge(_ evidence: ClassificationEvidence?) {
+            guard let evidence else { return }
+            best = best.map { $0.supplemented(with: evidence) } ?? evidence
+        }
+        func outcome() -> ClassificationLookup {
+            ClassificationLookup(evidence: best,
+                retryRequired: (hadFailure || googleFailed) && best?.isComplete != true,
+                usedGoogleKey: apiKey != nil && googleSucceeded && !googleFailed)
+        }
+        func recordGoogleFailure(_ error: Error) {
+            hadFailure = true
+            googleFailed = true
+            if case ServiceError.httpStatus(let status) = error, [401, 403, 429].contains(status) {
+                googleRetryAfter = Date().addingTimeInterval(300)
             }
+        }
+        var queries: [(String, Bool)] = []
+        if let normalizedISBN { queries.append(("isbn:\(normalizedISBN)", true)) }
+        if !Self.classificationTitle(title).isEmpty, !Self.matchKey(author).isEmpty {
+            queries.append(("\(Self.classificationTitle(title)) \(author)", false))
+        }
+        for (query, requireISBN) in queries {
+            try Task.checkCancellation()
+            guard Date() >= googleRetryAfter else { break }
+            do {
+                let page = try await googleClassificationSearch(query)
+                googleSucceeded = true
+                merge(Self.classificationEvidence(page, isbn: normalizedISBN, title: title, author: author, requireISBN: requireISBN))
+                // Search often returns only "Fiction" or an audience label. Read
+                // up to three verified volume records before discarding the source.
+                let candidates = page.filter {
+                    Self.isClassificationMatch($0, isbn: normalizedISBN, title: title, author: author, requireISBN: requireISBN)
+                }
+                let candidateKinds = Set(candidates.compactMap { BookFictionKind.classify($0.volumeInfo?.catalogCategories ?? []) })
+                if candidateKinds.count <= 1,
+                   best?.isComplete != true || best?.categories.contains(where: { $0.contains("/") }) != true {
+                    for candidate in candidates {
+                        guard visitedGoogleIDs.count < 3 else { break }
+                        guard let id = candidate.id, !id.isEmpty, visitedGoogleIDs.insert(id).inserted else { continue }
+                        do {
+                            let detail = try await fetchVolume(id: id)
+                            // The ID came from a verified candidate. Accept missing
+                            // identity fields in details, but reject contradictory ones.
+                            if Self.detailMatches(detail, candidate: candidate) {
+                                let categories = detail.volumeInfo?.catalogCategories ?? []
+                                let context = Self.classificationContext(detail)
+                                if !categories.isEmpty || !context.isEmpty {
+                                    merge(ClassificationEvidence(categories: categories, source: "google", context: context, workPageCounts: detail.volumeInfo?.pageCount.map { [$0] }))
+                                }
+                            }
+                        } catch is CancellationError { throw CancellationError() }
+                        catch ServiceError.notFound { continue }
+                        catch {
+                            recordGoogleFailure(error)
+                            if Date() < googleRetryAfter { break }
+                        }
+                        if best?.isComplete == true { break }
+                    }
+                }
+                if best?.isComplete == true { return outcome() }
+            } catch is CancellationError { throw CancellationError() }
+            catch { recordGoogleFailure(error) }
         }
         try Task.checkCancellation()
         if !savedCategories.isEmpty {
-            return ClassificationEvidence(categories: savedCategories, source: savedSource)
+            merge(ClassificationEvidence(categories: savedCategories, source: savedSource))
+            if best?.isComplete == true { return outcome() }
         }
-        // Missing ISBNs and empty edition records still get a work lookup, verified
-        // by both title and author. A first search result alone is never enough.
-        guard !Self.classificationTitle(title).isEmpty, !Self.matchKey(author).isEmpty else { return nil }
+
+        // The exact edition's link verifies the work independently of translated
+        // titles, subtitles, initials, narrator credits, and search ranking.
+        var visitedWorkIDs = Set<String>()
+        if let normalizedISBN {
+            do {
+                let url = try makeURL("https://openlibrary.org/isbn/\(normalizedISBN).json")
+                let edition: OpenLibraryEdition = try await request(url, catalog: true)
+                let identifiers = (edition.isbn_10 ?? []) + (edition.isbn_13 ?? [])
+                if identifiers.contains(where: { StoryGraphImporter.normalizedISBN($0) == normalizedISBN }) {
+                    if let subjects = edition.subjects, !subjects.isEmpty {
+                        merge(ClassificationEvidence(categories: subjects, source: "openlibrary"))
+                    }
+                    for work in (edition.works ?? []).prefix(3) {
+                        let id = work.key.components(separatedBy: "/").last ?? ""
+                        guard id.range(of: "^OL[0-9]+W$", options: .regularExpression) != nil,
+                              visitedWorkIDs.insert(id).inserted else { continue }
+                        do {
+                            let item = try await fetchVolume(id: "openlibrary:" + id)
+                            let categories = item.volumeInfo?.catalogCategories ?? []
+                            let context = Self.classificationContext(item)
+                            if !categories.isEmpty || !context.isEmpty {
+                                merge(ClassificationEvidence(categories: categories, source: "openlibrary", context: context))
+                            }
+                            if best?.isComplete != true {
+                                merge(try await classificationFromLinkedEditions(workID: id))
+                            }
+                        } catch is CancellationError { throw CancellationError() }
+                        catch ServiceError.notFound { continue }
+                        catch { hadFailure = true }
+                    }
+                    if let pages = edition.number_of_pages, pages > 0, best != nil {
+                        best?.editionPages = pages
+                        best?.editionISBN = normalizedISBN
+                    }
+                }
+            } catch is CancellationError { throw CancellationError() }
+            catch ServiceError.notFound { /* A missing edition is a normal miss. */ }
+            catch { hadFailure = true }
+            if best?.isComplete == true { return outcome() }
+        }
+
+        guard !Self.classificationTitle(title).isEmpty, !Self.matchKey(author).isEmpty else { return outcome() }
         let query = "title:\"\(Self.classificationTitle(title))\" author:\"\(author.replacingOccurrences(of: "\"", with: ""))\""
-        let page = try await searchPage(query: query, provider: .openLibrary)
+        let page: SearchPage
+        do { page = try await searchPage(query: query, provider: .openLibrary) }
+        catch is CancellationError { throw CancellationError() }
+        catch { hadFailure = true; return outcome() }
         var evidence: [ClassificationEvidence] = []
         for candidate in page.items.filter({ Self.matchesWork($0, title: title, author: author) }).prefix(3) {
-            guard let id = candidate.id else { continue }
-            let item = try await fetchVolume(id: id)
-            let categories = item.volumeInfo?.categories ?? []
-            if !categories.isEmpty {
-                evidence.append(ClassificationEvidence(categories: categories, source: "openlibrary"))
+            var categories = candidate.volumeInfo?.catalogCategories ?? []
+            var context = Self.classificationContext(candidate)
+            if let id = candidate.id,
+               visitedWorkIDs.insert(String(id.dropFirst("openlibrary:".count))).inserted {
+                do {
+                    let item = try await fetchVolume(id: id)
+                    categories += item.volumeInfo?.catalogCategories ?? []
+                    context += Self.classificationContext(item)
+                    if !ClassificationEvidence(categories: categories, source: "openlibrary").isComplete,
+                       let editionEvidence = try await classificationFromLinkedEditions(
+                        workID: String(id.dropFirst("openlibrary:".count))) {
+                        categories += editionEvidence.categories
+                    }
+                } catch is CancellationError { throw CancellationError() }
+                catch ServiceError.notFound { /* Retain the verified search subjects. */ }
+                catch { hadFailure = true }
+            }
+            if !categories.isEmpty || !context.isEmpty {
+                evidence.append(ClassificationEvidence(categories: Array(Set(categories)).sorted(), source: "openlibrary", context: Array(Set(context)).sorted()))
             }
         }
-        guard let first = evidence.first, evidence.allSatisfy({
-            BookFictionKind.classify($0.categories) == BookFictionKind.classify(first.categories)
-        }) else { return nil }
-        return first
+        let kinds = Set(evidence.compactMap(\.fictionKind))
+        if kinds.count <= 1 { for item in evidence { merge(item) } }
+        return outcome()
+    }
+
+    /// Work subjects and edition subjects are independently populated in Open
+    /// Library. A sparse work can still have well-classified sibling editions.
+    /// Work membership verifies identity; another edition never supplies pages.
+    private func classificationFromLinkedEditions(workID: String) async throws -> ClassificationEvidence? {
+        guard workID.range(of: "^OL[0-9]+W$", options: .regularExpression) != nil else {
+            throw ServiceError.invalidURL
+        }
+        let categories: [String]
+        if var cached = workEditionSubjects[workID], cached.expiresAt > Date() {
+            cached.lastAccess = Date()
+            workEditionSubjects[workID] = cached
+            categories = cached.value
+        } else {
+            // One bounded page, used only when the work's classification is sparse.
+            let url = try makeURL("https://openlibrary.org/works/\(workID)/editions.json",
+                                  queryItems: [URLQueryItem(name: "limit", value: "20")])
+            let response: OpenLibraryEditions = try await request(url, catalog: true)
+            let subjects = response.entries.prefix(20).filter {
+                $0.works?.contains { $0.key == "/works/" + workID } == true
+            }.map { $0.subjects ?? [] }
+            let kinds = Set(subjects.compactMap(BookFictionKind.classify))
+            // Conflicting catalog editions are not resolved by picking one.
+            categories = kinds.count <= 1 ? Array(Set(subjects.flatMap { $0 })).sorted() : []
+            workEditionSubjects[workID] = Cached(value: categories, expiresAt: Date().addingTimeInterval(86_400))
+            trim(&workEditionSubjects, limit: 64)
+        }
+        return categories.isEmpty ? nil : ClassificationEvidence(categories: categories, source: "openlibrary")
+    }
+
+    private struct OpenLibraryEditions: Decodable {
+        let entries: [OpenLibraryEdition]
+    }
+
+    private struct OpenLibraryEdition: Decodable {
+        let isbn_10: [String]?
+        let isbn_13: [String]?
+        let subjects: [String]?
+        let number_of_pages: Int?
+        let works: [WorkLink]?
+        struct WorkLink: Decodable { let key: String }
+    }
+
+    nonisolated private static func detailMatches(_ detail: BookItem, candidate: BookItem) -> Bool {
+        if let id = detail.id, let expected = candidate.id, id != expected { return false }
+        guard let info = detail.volumeInfo else { return false }
+        // A matching ISBN is stronger than title spelling differences.
+        let expectedISBNs = Set((candidate.volumeInfo?.industryIdentifiers ?? []).compactMap {
+            StoryGraphImporter.normalizedISBN($0.identifier ?? "")
+        })
+        let foundISBNs = Set((info.industryIdentifiers ?? []).compactMap {
+            StoryGraphImporter.normalizedISBN($0.identifier ?? "")
+        })
+        if !expectedISBNs.isDisjoint(with: foundISBNs) { return true }
+        if let title = info.title, let expected = candidate.volumeInfo?.title,
+           matchKey(classificationTitle(title)) != matchKey(classificationTitle(expected)) { return false }
+        if let authors = info.authors, !authors.isEmpty,
+           let expected = candidate.volumeInfo?.authors, !expected.isEmpty,
+           !authors.contains(where: { a in expected.contains { authorKey(a) == authorKey($0) } }) { return false }
+        return true
     }
 
     private func googleClassificationSearch(_ query: String) async throws -> [BookItem] {
@@ -324,36 +544,117 @@ actor BookCatalogService {
             .components(separatedBy: CharacterSet.alphanumerics.inverted).filter { !$0.isEmpty }.joined(separator: " ")
     }
 
+    nonisolated private static func authorKey(_ text: String) -> String {
+        // J.R.R. and J. R. R. share an identity; a different given name does not.
+        var words: [String] = []
+        var initials = ""
+        for token in matchKey(text).split(separator: " ") {
+            if token.count == 1 { initials += token }
+            else {
+                if !initials.isEmpty { words.append(initials); initials = "" }
+                words.append(String(token))
+            }
+        }
+        if !initials.isEmpty { words.append(initials) }
+        return words.joined(separator: " ")
+    }
+
+    nonisolated private static func isClassificationMatch(_ item: BookItem, isbn: String?, title: String,
+                                                          author: String, requireISBN: Bool) -> Bool {
+        if requireISBN {
+            guard let isbn = isbn.flatMap(StoryGraphImporter.normalizedISBN) else { return false }
+            return item.volumeInfo?.industryIdentifiers?.contains {
+                StoryGraphImporter.normalizedISBN($0.identifier ?? "") == isbn
+            } == true
+        }
+        return matchesWork(item, title: title, author: author)
+    }
+
     nonisolated static func matchesWork(_ item: BookItem, title: String, author: String) -> Bool {
         guard let info = item.volumeInfo, let candidateTitle = info.title else { return false }
         let expected = matchKey(classificationTitle(title))
-        let authors = author.components(separatedBy: ",").map(matchKey).filter { !$0.isEmpty }
+        let authors = author.components(separatedBy: ",").map(authorKey).filter { !$0.isEmpty }
         let fullTitle = candidateTitle + (info.subtitle.map { ": " + $0 } ?? "")
         let titleMatches = [candidateTitle, fullTitle].contains { matchKey(classificationTitle($0)) == expected }
         return !expected.isEmpty && titleMatches
-            && (info.authors ?? []).contains { authors.contains(matchKey($0)) }
+            && (info.authors ?? []).contains { authors.contains(authorKey($0)) }
     }
 
     nonisolated static func classificationEvidence(_ items: [BookItem], isbn: String?, title: String,
                                                    author: String, requireISBN: Bool) -> ClassificationEvidence? {
-        let candidates = items.filter { item in
-            if requireISBN {
-                guard let isbn = isbn.flatMap(StoryGraphImporter.normalizedISBN) else { return false }
-                return item.volumeInfo?.industryIdentifiers?.contains {
-                    StoryGraphImporter.normalizedISBN($0.identifier ?? "") == isbn
-                } == true
-            }
-            return matchesWork(item, title: title, author: author)
+        let candidates = items.filter {
+            isClassificationMatch($0, isbn: isbn, title: title, author: author, requireISBN: requireISBN)
         }
-        let categories = Array(Set(candidates.flatMap { $0.volumeInfo?.categories ?? [] })).sorted()
-        guard !categories.isEmpty else { return nil }
-        let kinds = Set(candidates.compactMap { BookFictionKind.classify($0.volumeInfo?.categories ?? []) })
+        let categories = Array(Set(candidates.flatMap { $0.volumeInfo?.catalogCategories ?? [] })).sorted()
+        let context = Array(Set(candidates.flatMap(Self.classificationContext))).sorted()
+        guard !categories.isEmpty || !context.isEmpty else { return nil }
+        let kinds = Set(candidates.compactMap { BookFictionKind.classify($0.volumeInfo?.catalogCategories ?? []) })
         // Conflicting editions are not a reliable category source.
         guard kinds.count <= 1 else { return nil }
         let normalizedISBN = isbn.flatMap(StoryGraphImporter.normalizedISBN)
         let pages = normalizedISBN.flatMap { exactEditionPageCount(items: candidates, isbn: $0) }
         return ClassificationEvidence(categories: categories, source: "google", editionPages: pages,
-                                      editionISBN: pages == nil ? nil : normalizedISBN)
+                                      editionISBN: pages == nil ? nil : normalizedISBN, context: context,
+                                      workPageCounts: candidates.compactMap { $0.volumeInfo?.pageCount }.filter { (1...20_000).contains($0) })
+    }
+
+    /// Same-work edition lengths are explicitly estimates. Identity checks are
+    /// the same as classification; an unrelated search hit never supplies a count.
+    func estimatedPageCounts(isbn: String, title: String, author: String) async throws -> [Int] {
+        var visited = Set<String>()
+        if let isbn = StoryGraphImporter.normalizedISBN(isbn) {
+            do {
+                let edition: OpenLibraryEdition = try await request(makeURL("https://openlibrary.org/isbn/\(isbn).json"), catalog: true)
+                if ((edition.isbn_10 ?? []) + (edition.isbn_13 ?? [])).contains(where: { StoryGraphImporter.normalizedISBN($0) == isbn }) {
+                    for link in (edition.works ?? []).prefix(2) {
+                        let id = link.key.components(separatedBy: "/").last ?? ""
+                        guard id.range(of: "^OL[0-9]+W$", options: .regularExpression) != nil else { continue }
+                        visited.insert(id)
+                        let counts = try await linkedEditionPageCounts(workID: id)
+                        if !counts.isEmpty { return counts }
+                    }
+                }
+            } catch is CancellationError { throw CancellationError() }
+            catch { /* Missing or temporarily unavailable editions can use work search. */ }
+        }
+        try Task.checkCancellation()
+        guard !Self.classificationTitle(title).isEmpty, !Self.matchKey(author).isEmpty else { return [] }
+        if Date() >= googleRetryAfter {
+            do {
+                let items = try await googleClassificationSearch("\(Self.classificationTitle(title)) \(author)")
+                let matches = items.filter { Self.matchesWork($0, title: title, author: author) }
+                let kinds = Set(matches.compactMap { BookFictionKind.classify($0.volumeInfo?.catalogCategories ?? []) })
+                let counts = matches.compactMap { $0.volumeInfo?.pageCount }.filter { (1...20_000).contains($0) }
+                if kinds.count <= 1 && !counts.isEmpty { return counts }
+            } catch is CancellationError { throw CancellationError() }
+            catch { /* Open Library can still supply a verified work. */ }
+        }
+        do {
+            let query = "title:\"\(Self.classificationTitle(title))\" author:\"\(author.replacingOccurrences(of: "\"", with: ""))\""
+            let page = try await searchPage(query: query, provider: .openLibrary)
+            for item in page.items.filter({ Self.matchesWork($0, title: title, author: author) }).prefix(2) {
+                guard let key = item.id, key.hasPrefix("openlibrary:") else { continue }
+                let id = String(key.dropFirst("openlibrary:".count))
+                guard visited.insert(id).inserted else { continue }
+                let counts = try await linkedEditionPageCounts(workID: id)
+                if !counts.isEmpty { return counts }
+            }
+        } catch is CancellationError { throw CancellationError() }
+        catch { /* The display fallback remains marked low confidence. */ }
+        return []
+    }
+
+    private func linkedEditionPageCounts(workID: String) async throws -> [Int] {
+        guard workID.range(of: "^OL[0-9]+W$", options: .regularExpression) != nil else { return [] }
+        if let cached = workEditionPages[workID], cached.expiresAt > Date() { return cached.value }
+        let url = try makeURL("https://openlibrary.org/works/\(workID)/editions.json", queryItems: [URLQueryItem(name: "limit", value: "20")])
+        let response: OpenLibraryEditions = try await request(url, catalog: true)
+        let linked = response.entries.prefix(20).filter { $0.works?.contains { $0.key == "/works/" + workID } == true }
+        let kinds = Set(linked.compactMap { BookFictionKind.classify($0.subjects ?? []) })
+        let counts = kinds.count <= 1 ? linked.compactMap(\.number_of_pages).filter { (1...20_000).contains($0) } : []
+        workEditionPages[workID] = Cached(value: counts, expiresAt: Date().addingTimeInterval(86_400))
+        trim(&workEditionPages, limit: 64)
+        return counts
     }
 
     /// Page totals always require the imported edition's exact ISBN, including
@@ -516,21 +817,24 @@ actor BookCatalogService {
     }
 
     private func acquireCatalogSlot() async throws {
+        let background = Self.isBackgroundLookup
+        if !background { interactiveWaiters += 1 }
+        defer { if !background { interactiveWaiters -= 1 } }
         while true {
             try Task.checkCancellation()
             let delay = minimumRequestInterval - Date().timeIntervalSince(lastCatalogRequestStarted)
-            if delay <= 0 {
+            if delay <= 0, !background || interactiveWaiters == 0 {
                 lastCatalogRequestStarted = Date()
                 return
             }
             // A canceled waiter never reserves time. Recheck after actor reentry.
-            try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            try await Task.sleep(nanoseconds: UInt64(max(0.05, delay) * 1_000_000_000))
         }
     }
 
     private func request<Response: Decodable>(_ url: URL, catalog: Bool = false,
                                                forceRefresh: Bool = false) async throws -> Response {
-        if catalog { try await acquireCatalogSlot() }
+        if catalog || Self.isBackgroundLookup { try await acquireCatalogSlot() }
         try Task.checkCancellation()
         var request = URLRequest(url: url)
         request.timeoutInterval = 15
@@ -563,6 +867,7 @@ actor BookCatalogService {
             let title: String?
             let author_name: [String]?
             let cover_i: Int?
+            let subject: [String]?
         }
     }
 

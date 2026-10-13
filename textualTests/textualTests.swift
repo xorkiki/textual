@@ -53,7 +53,7 @@ struct textualTests {
             #expect(queryValue("q", in: request) == "A Wizard of Earthsea")
             #expect(queryValue("limit", in: request) == "20")
             #expect(queryValue("offset", in: request) == "20")
-            #expect(queryValue("fields", in: request) == "key,title,author_name,cover_i")
+            #expect(queryValue("fields", in: request) == "key,title,author_name,cover_i,subject")
             #expect(queryValue("key", in: request) == nil)
         }
     }
@@ -539,15 +539,46 @@ struct textualTests {
         #expect(BookServiceURLProtocol.state.requests.allSatisfy { $0.url?.host == "www.googleapis.com" })
     }
 
+    @Test func broadGoogleCategoryContinuesToVerifiedPublicSubjects() async throws {
+        let (service, session) = makeService(apiKey: "test-key") { request in
+            if request.url?.host == "www.googleapis.com" {
+                return StubResponse(status: 200, json: #"{"items":[{"volumeInfo":{"title":"Matilda","authors":["Roald Dahl"],"categories":["Fiction"],"industryIdentifiers":[{"identifier":"9780140328721"}]}}]}"#)
+            }
+            if request.url?.path == "/search.json" {
+                return StubResponse(status: 200, json: #"{"docs":[{"key":"/works/OL123W","title":"Matilda","author_name":["Roald Dahl"]}]}"#)
+            }
+            return StubResponse(status: 200, json: #"{"title":"Matilda","subjects":["Fantasy fiction","London","Matilda Wormwood"]}"#)
+        }
+        defer { session.invalidateAndCancel() }
+        let evidence = try #require(try await service.classification(isbn: "9780140328721", title: "Matilda", author: "Roald Dahl", savedCategories: ["Fiction"], savedSource: "google"))
+        #expect(evidence.fictionKind == .fiction)
+        #expect(evidence.genres == ["Fantasy"])
+        #expect(evidence.openLibraryCategories?.contains("London") == true)
+        #expect(BookServiceURLProtocol.state.requests.contains { $0.url?.host == "openlibrary.org" })
+    }
+
+    @Test func publicFallbackFailureKeepsVerifiedGoogleEvidence() async throws {
+        let (service, session) = makeService(apiKey: "test-key") { request in
+            if request.url?.host == "www.googleapis.com" {
+                return StubResponse(status: 200, json: #"{"items":[{"volumeInfo":{"title":"Matilda","authors":["Roald Dahl"],"categories":["Fiction"]}}]}"#)
+            }
+            return StubResponse(status: 503, json: "{}")
+        }
+        defer { session.invalidateAndCancel() }
+        let evidence = try await service.classification(isbn: "", title: "Matilda", author: "Roald Dahl", savedCategories: [], savedSource: "google")
+        #expect(evidence?.fictionKind == .fiction)
+        #expect(evidence?.genres.isEmpty == true)
+    }
+
     @Test func classificationQueriesGoogleEvenWithExistingFallbackSubjects() async throws {
         let (service, session) = makeService(apiKey: nil) { _ in
-            StubResponse(status: 200, json: #"{"items":[{"id":"verified","volumeInfo":{"title":"Matilda","authors":["Roald Dahl"],"categories":["Juvenile Fiction"],"industryIdentifiers":[{"type":"ISBN_13","identifier":"9780140328721"}]}}]}"#)
+            StubResponse(status: 200, json: #"{"items":[{"id":"verified","volumeInfo":{"title":"Matilda","authors":["Roald Dahl"],"categories":["Juvenile Fiction / Fantasy"],"industryIdentifiers":[{"type":"ISBN_13","identifier":"9780140328721"}]}}]}"#)
         }
         defer { session.invalidateAndCancel() }
         let evidence = try await service.classification(isbn: "9780140328721", title: "Matilda", author: "Roald Dahl", savedCategories: ["Children"], savedSource: "openlibrary")
         #expect(evidence?.source == "google")
         #expect(BookServiceURLProtocol.state.requests.first?.value(forHTTPHeaderField: "X-Ios-Bundle-Identifier") == Bundle.main.bundleIdentifier)
-        #expect(evidence?.categories == ["Juvenile Fiction"])
+        #expect(evidence?.categories == ["Juvenile Fiction / Fantasy"])
         #expect(BookServiceURLProtocol.state.requests.count == 1)
         #expect(BookServiceURLProtocol.state.requests.first?.url?.host == "www.googleapis.com")
     }
@@ -557,12 +588,12 @@ struct textualTests {
             let q = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "q" }?.value
             if q?.hasPrefix("isbn:") == true { return StubResponse(status: 200, json: #"{"totalItems":0}"#) }
             #expect(q == "The Prison Healer Lynette Noni")
-            return StubResponse(status: 200, json: #"{"items":[{"volumeInfo":{"title":"The Prison Healer","authors":["Lynette Noni"],"categories":["Young Adult Fiction"]}},{"volumeInfo":{"title":"The Prison Healer Box Set","authors":["Lynette Noni"],"categories":["Nonfiction"]}}]}"#)
+            return StubResponse(status: 200, json: #"{"items":[{"volumeInfo":{"title":"The Prison Healer","authors":["Lynette Noni"],"categories":["Young Adult Fiction / Fantasy"]}},{"volumeInfo":{"title":"The Prison Healer Box Set","authors":["Lynette Noni"],"categories":["Nonfiction"]}}]}"#)
         }
         defer { session.invalidateAndCancel() }
         let evidence = try await service.classification(isbn: "9780358434559", title: "The Prison Healer", author: "Lynette Noni", savedCategories: [], savedSource: "openlibrary")
         #expect(evidence?.source == "google")
-        #expect(evidence?.categories == ["Young Adult Fiction"])
+        #expect(evidence?.categories == ["Young Adult Fiction / Fantasy"])
         #expect(BookServiceURLProtocol.state.requests.count == 2)
     }
 
@@ -570,7 +601,7 @@ struct textualTests {
         let (service, session) = makeService(apiKey: "test-key") { request in
             let q = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "q" }?.value
             if q?.hasPrefix("isbn:") == true { return StubResponse(status: 503, json: "{}") }
-            return StubResponse(status: 200, json: #"{"items":[{"volumeInfo":{"title":"The Prison Healer","authors":["Lynette Noni"],"categories":["Young Adult Fiction"]}}]}"#)
+            return StubResponse(status: 200, json: #"{"items":[{"volumeInfo":{"title":"The Prison Healer","authors":["Lynette Noni"],"categories":["Young Adult Fiction / Fantasy"]}}]}"#)
         }
         defer { session.invalidateAndCancel() }
         for _ in 0..<2 {

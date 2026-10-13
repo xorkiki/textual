@@ -12,11 +12,11 @@ struct ReadingPeriod: Codable, Equatable, Sendable {
 struct StoryGraphReadingData: Codable, Equatable, Sendable {
     var version: Int = 1
     let sourceKey: String
-    let status: String
+    var status: String
     let dateAdded: String?
-    let lastDateRead: String?
-    let periods: [ReadingPeriod]
-    let readCount: Int?
+    var lastDateRead: String?
+    var periods: [ReadingPeriod]
+    var readCount: Int?
     let rating: Double?
     let format: String
     let moods: [String]
@@ -25,12 +25,18 @@ struct StoryGraphReadingData: Codable, Equatable, Sendable {
     let owned: Bool?
     let originalFields: [String: String]
 
+    /// Original Textual save time travels with private metadata across devices.
+    var libraryAddedAt: Date? = nil
+    /// Textual reading activity travels with the existing private library payload.
+    var journal: ReadingJournal? = nil
     /// Owner-private queue state, carried by the existing library sync payload.
     var upNextPosition: Int? = nil
     var upNextExcluded: Bool? = nil
 
     func preservingQueue(from saved: Self?) -> Self {
         var copy = self
+        copy.libraryAddedAt = saved?.libraryAddedAt
+        copy.journal = saved?.journal
         copy.upNextPosition = saved?.upNextPosition
         copy.upNextExcluded = saved?.upNextExcluded
         return copy

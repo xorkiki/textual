@@ -8,6 +8,8 @@ struct ReaderProfileView: View {
     @Query(filter: #Predicate<Book> { !$0.isRemovedFromLibrary }, sort: \Book.title) private var books: [Book]
     @Query private var drafts: [ReaderProfileDraft]
     @Environment(\.modelContext) private var context
+    @Environment(\.readingLibrary) private var readingLibrary
+    @State private var publicationTask: Task<Void, Never>?
     @Environment(\.scenePhase) private var scenePhase
     @State private var store: ReaderProfileStore?
     @State private var showPicker = false
@@ -23,7 +25,11 @@ struct ReaderProfileView: View {
 
     private var draft: ReaderProfileDraft? { drafts.first { $0.userID == account.userID } }
     private var content: ReaderPublicContent {
-        var result = ReaderPersonality.summarize(ReaderPersonality.evidence(books), favorites: (draft?.content?.favorites ?? []).map { $0.refreshed(from: books) })
+        var result = readingLibrary?.profile ?? ReaderPersonality.summarize(ReaderPersonality.evidence(books), favorites: [])
+        let byID = Dictionary(books.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        result.favorites = (draft?.content?.favorites ?? []).map { favorite in
+            favorite.refreshed(from: byID[favorite.id].map { [$0] } ?? books)
+        }
         result.avatarPath = draft?.content?.avatarPath
         return result
     }
@@ -59,20 +65,17 @@ struct ReaderProfileView: View {
                                 Button("Try again") { synchronize() }
                             }
                         }
-                        .font(.custom("PlusJakartaSans-Regular", size: 12, relativeTo: .caption))
+                        .font(.designSystem(.uiLabel))
                         .foregroundStyle(Color.paper)
                     }
                 }
-                .padding(.horizontal, 24).padding(.top, 12)
+                .padding(.horizontal, TextualLayout.pageInset).padding(.top, 12)
                 .padding(.bottom, TextualNavigationLayout.bottomExtent + 24)
                 .frame(maxWidth: 650).frame(maxWidth: .infinity)
             }
             .background(Color.inkwell.ignoresSafeArea())
             .scrollIndicators(.hidden)
-            .textualPageHeader(compact: true) {
-                header.padding(.horizontal, 24)
-                    .frame(maxWidth: 650)
-            }
+            .textualPageHeader { header }
             .toolbar(.hidden, for: .navigationBar)
             .refreshable { await syncNow() }
             .navigationDestination(item: $selectedBook) { BookDetailView(book: $0) }
@@ -87,10 +90,7 @@ struct ReaderProfileView: View {
                     PublicReaderProfilePage(firstName: account.profile?.firstName ?? "reader",
                                             username: account.profile?.username ?? "reader", content: content,
                                             avatarData: draft?.matchingAvatarData, avatarTransport: avatarTransport)
-                        .navigationTitle("public view")
-                        .navigationBarTitleDisplayMode(.inline)
-                        .textualNavigationChrome()
-                        .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showPreview = false } } }
+                        .textualSheetHeader("Public view") { showPreview = false }
                 }
                 .preferredColorScheme(.dark)
             }
@@ -108,13 +108,18 @@ struct ReaderProfileView: View {
             .task {
                 guard let id = account.userID, let client = account.client else { return }
                 if store == nil { store = ReaderProfileStore(userID: id, context: context, transport: SupabaseReaderProfileTransport(client: client)) }
-                saveContent(content)
-                await syncNow()
+                if readingLibrary == nil || readingLibrary?.isReady == true {
+                    saveContent(content)
+                    await syncNow()
+                }
             }
             .onChange(of: content) { _, updated in
-                saveContent(updated)
-                synchronize()
+                schedulePublication()
             }
+            .onChange(of: readingLibrary?.isReady) { _, ready in
+                if ready == true { schedulePublication() }
+            }
+            .onDisappear { publicationTask?.cancel() }
             .onChange(of: scenePhase) { _, phase in if phase == .active { synchronize() } }
             .onOpenURL { url in
                 guard let username = ReaderProfileRoute.username(url) else { return }
@@ -125,17 +130,12 @@ struct ReaderProfileView: View {
     }
 
     private var header: some View {
-        HStack(spacing: 10) {
-            Text("PROFILE").font(.custom("CormorantGaramond-Regular", size: 28, relativeTo: .title2))
-                .accessibilityAddTraits(.isHeader)
-            Spacer()
-            Button { showPreview = true } label: {
-                Image(systemName: "eye").frame(width: 44, height: 44)
-            }
-            .accessibilityLabel("Preview public profile")
-            .accessibilityIdentifier("profile.publicPreview")
+        TextualHeader(title: "PROFILE") {
+            Button { showPreview = true } label: { DesignSystemIconView(.preview) }
+                .buttonStyle(IconButtonStyle())
+                .accessibilityLabel("Preview public profile")
+                .accessibilityIdentifier("profile.publicPreview")
         }
-        .buttonStyle(.plain).foregroundStyle(Color.paper)
     }
 
     private func saveContent(_ content: ReaderPublicContent) {
@@ -169,6 +169,17 @@ struct ReaderProfileView: View {
         updated.favorites = Array(favorites.prefix(ReaderShelf.limit))
         saveContent(updated)
         synchronize()
+    }
+
+    private func schedulePublication() {
+        publicationTask?.cancel()
+        guard readingLibrary == nil || readingLibrary?.isReady == true else { return }
+        publicationTask = Task {
+            do { try await Task.sleep(for: .seconds(1)) } catch { return }
+            guard !Task.isCancelled else { return }
+            saveContent(content)
+            await syncNow()
+        }
     }
 
     private func synchronize() { Task { await syncNow() } }
@@ -206,8 +217,8 @@ private struct ReaderFavoritePicker: View {
                         } label: {
                             SavedBookCover(book: book, width: 90, height: 135)
                                 .overlay(alignment: .topTrailing) {
-                                    Image(systemName: selected ? "checkmark.circle.fill" : "circle")
-                                        .font(.system(size: 22)).foregroundStyle(Color.paper)
+                                    DesignSystemIconView(selected ? .selected : .unselected, size: TextualIconStyle.selection.size)
+                                        .foregroundStyle(Color.paper)
                                         .background(Color.inkwell, in: Circle()).padding(5)
                                 }
                         }
@@ -218,20 +229,25 @@ private struct ReaderFavoritePicker: View {
                         .accessibilityValue(selected ? "Selected" : "Not selected")
                     }
                 }
-                .padding(24)
+                .padding(TextualLayout.pageInset)
                 if matches.isEmpty {
                     Text(books.isEmpty ? "your archive is still a blank page. add a book, then give it a place here." : "nothing on this shelf by that name.")
-                        .font(.custom("CormorantGaramond-Regular", size: 24)).foregroundStyle(Color.ghost).padding(24)
+                        .font(.designSystem(.sectionHeading)).foregroundStyle(Color.ghost).padding(TextualLayout.pageInset)
                 }
             }
             .background(Color.inkwell.ignoresSafeArea())
-            .searchable(text: $query, prompt: "Search your archive")
-            .navigationTitle("add to your shelf")
-            .navigationBarTitleDisplayMode(.inline)
-            .textualNavigationChrome()
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) { Button("Done") { save(selection); dismiss() } }
+            .textualPageHeader {
+                VStack(spacing: TextualLayout.itemGap) {
+                    TextualHeader(title: "Add to your shelf") {
+                        HStack(spacing: TextualLayout.groupGap) {
+                            IconButton(icon: .checkmark) { save(selection); dismiss() }
+                                .accessibilityLabel("Save shelf selection")
+                            TextualCloseButton(label: "Cancel shelf selection") { dismiss() }
+                        }
+                    }
+                    TextualSearchField("Search your archive", text: $query)
+                        .padding(.horizontal, TextualLayout.pageInset)
+                }
             }
             .onAppear { selection = favorites }
         }
@@ -254,7 +270,7 @@ struct PublicReaderProfilePage: View {
                                   avatarData: avatarData, avatarTransport: avatarTransport)
                 ReaderBookshelf(readerName: firstName, favorites: content.favorites, open: { selectedBook = $0.detailBook() })
             }
-            .padding(24).frame(maxWidth: 650).frame(maxWidth: .infinity)
+            .padding(TextualLayout.pageInset).frame(maxWidth: 650).frame(maxWidth: .infinity)
         }
         .background(Color.inkwell.ignoresSafeArea())
         .navigationDestination(item: $selectedBook) { BookDetailView(book: $0) }
@@ -279,24 +295,28 @@ private struct ReaderProfileLookup: View {
                 } else {
                     VStack(spacing: 16) {
                         Text("a familiar face in the stacks")
-                            .font(.custom("CormorantGaramond-Regular", size: 28))
+                            .font(.designSystem(.heading3))
                         TextField("username", text: $username)
                             .textInputAutocapitalization(.never).autocorrectionDisabled()
                             .padding(16).background(Color.velvet, in: Capsule())
                             .submitLabel(.search).onSubmit { lookup() }
                         Button("Find reader") { lookup() }.disabled(isLoading || username.isEmpty)
                         if isLoading { ProgressView() }
-                        if let message { Text(message).font(.footnote).foregroundStyle(Color.ghost) }
-                    }.padding(24).frame(maxWidth: .infinity, maxHeight: .infinity)
+                        if let message { Text(message).font(.designSystem(.caption)).foregroundStyle(Color.ghost) }
+                    }.padding(TextualLayout.pageInset).frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
             .foregroundStyle(Color.paper).background(Color.inkwell.ignoresSafeArea())
-            .navigationTitle(profile.map { "@\($0.username)" } ?? "find a reader")
-            .navigationBarTitleDisplayMode(.inline)
-            .textualNavigationChrome()
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
-                if profile != nil { ToolbarItem(placement: .topBarLeading) { Button("Search") { profile = nil } } }
+            .textualPageHeader {
+                TextualHeader(title: profile.map { "@\($0.username)" } ?? "Find a reader") {
+                    HStack(spacing: TextualLayout.groupGap) {
+                        if profile != nil {
+                            IconButton(icon: .search) { profile = nil }
+                                .accessibilityLabel("Find another reader")
+                        }
+                        TextualCloseButton { dismiss() }
+                    }
+                }
             }
             .onAppear { username = initialUsername; if !username.isEmpty { lookup() } }
         }

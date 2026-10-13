@@ -21,7 +21,7 @@ struct StoryGraphImportView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
                     Text(completed == nil ? "Bring your reading with you." : "Your reading, saved.")
-                        .font(.custom("CormorantGaramond-Regular", size: 32, relativeTo: .title))
+                        .font(.designSystem(.heading2))
                     if let completed {
                         Text("\(completed.added) added · \(completed.updated) updated · \(completed.unchanged) already in your archive")
                         Text("Your reading history is saved to this account on this iPhone.")
@@ -32,13 +32,13 @@ struct StoryGraphImportView: View {
                         Text("Choose your StoryGraph CSV export. Review it here before adding it to My Archive.")
                             .foregroundStyle(Color.ghost)
                         Text("Private to \(accountEmail ?? "your signed-in account")")
-                            .font(.custom("PlusJakartaSans-Regular", size: 13, relativeTo: .caption))
+                            .font(.designSystem(.caption))
                         if isReading {
                             ProgressView("Reading your export…")
                         } else if let document, let preview {
-                            Text(fileName).font(.caption).foregroundStyle(Color.ghost).lineLimit(2)
+                            Text(fileName).font(.designSystem(.uiLabel)).foregroundStyle(Color.ghost).lineLimit(2)
                             VStack(alignment: .leading, spacing: 12) {
-                                Text("\(document.records.count) books").font(.custom("PlusJakartaSans-Medium", size: 20))
+                                Text("\(document.records.count) books").font(.designSystem(.bodyLarge))
                                 countRow("New books", preview.added)
                                 countRow("Reading data updates", preview.updated)
                                 countRow("Already imported", preview.unchanged)
@@ -51,18 +51,18 @@ struct StoryGraphImportView: View {
                                 }
                             }
                             Text("Reading dates, rereads, ratings, reviews, moods, tags and ownership are preserved. Matching books keep their current titles and covers; their StoryGraph reading data will be updated. Nothing else is removed.")
-                                .font(.custom("PlusJakartaSans-Regular", size: 13, relativeTo: .caption))
+                                .font(.designSystem(.caption))
                                 .foregroundStyle(Color.ghost)
                             DisclosureGroup("About imported stats") {
                                 Text("Completed reads count regardless of a book’s current status. Missing dates stay undated. The export does not contain page totals or StoryGraph’s calculated finish-time average; Textual uses available catalog pages and imported reading dates.")
-                                    .font(.caption)
+                                    .font(.designSystem(.uiLabel))
                             }
                             if document.duplicateRows > 0 { Text("\(document.duplicateRows) identical duplicate rows skipped.") }
                             if !document.warnings.isEmpty {
                                 DisclosureGroup("\(document.warnings.count) import notes") {
                                     VStack(alignment: .leading, spacing: 8) {
                                         ForEach(Array(document.warnings.enumerated()), id: \.offset) { _, warning in
-                                            Text(warning).font(.caption)
+                                            Text(warning).font(.designSystem(.uiLabel))
                                         }
                                     }
                                 }
@@ -73,7 +73,7 @@ struct StoryGraphImportView: View {
                                         VStack(alignment: .leading, spacing: 4) {
                                             Text(record.title)
                                             Text("\(record.author) · \(record.reading.statusLabel)")
-                                                .font(.caption).foregroundStyle(Color.ghost)
+                                                .font(.designSystem(.uiLabel)).foregroundStyle(Color.ghost)
                                         }.frame(maxWidth: .infinity, alignment: .leading)
                                     }
                                 }.padding(.top, 12)
@@ -84,8 +84,7 @@ struct StoryGraphImportView: View {
                         }
                         if !isReading {
                             Button(document == nil ? "Choose CSV Import" : "Choose another file") { chooseFile = true }
-                                .frame(maxWidth: .infinity, minHeight: 52)
-                                .background(Color.velvet.opacity(0.35), in: Capsule())
+                                .buttonStyle(TextualButtonStyle(variant: .secondary))
                                 .disabled(isSaving)
                                 .accessibilityIdentifier("import.choose")
                         }
@@ -94,18 +93,15 @@ struct StoryGraphImportView: View {
                         }
                     }
                 }
-                .font(.custom("PlusJakartaSans-Regular", size: 15, relativeTo: .body))
+                .font(.designSystem(.bodyMedium))
                 .foregroundStyle(Color.paper)
-                .padding(28)
+                .padding(TextualLayout.pageInset)
                 .frame(maxWidth: 540)
                 .frame(maxWidth: .infinity)
             }
             .scrollIndicators(.hidden)
             .background(Color.inkwell)
-            .navigationTitle("Import reading data")
-            .navigationBarTitleDisplayMode(.inline)
-            .textualNavigationChrome()
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() }.disabled(isSaving) } }
+            .textualSheetHeader("Import reading data", isEnabled: !isSaving) { dismiss() }
         }
         .tint(Color.paper)
         .preferredColorScheme(.dark)
@@ -131,11 +127,9 @@ struct StoryGraphImportView: View {
         }
     }
     private func action(_ title: String, perform: @escaping () -> Void) -> some View {
-        Button(action: perform) {
-            Text(title).frame(maxWidth: .infinity, minHeight: 52)
-                .foregroundStyle(Color.inkwell).background(Color.paper, in: Capsule())
-        }.buttonStyle(.plain)
+        Button(title, action: perform).buttonStyle(TextualButtonStyle())
     }
+
     private func read(_ url: URL) {
         readTask?.cancel()
         document = nil; preview = nil; errorMessage = nil; isReading = true

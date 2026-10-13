@@ -1,88 +1,107 @@
-//
-//  Icon+DesignSystem.swift
-//  textual
-//
-//  Created by kiki o on 1/26/26.
-//
-
 import SwiftUI
 
+/// Asset names and the few unavailable utility symbols are defined only here.
+/// Features select a semantic role rather than naming image files or SF Symbols.
 enum DesignSystemIcon: String, CaseIterable {
-    // Arrows
-    case arrowDown = "arrow-down"
-    case arrowDownLeft = "arrow-down-left"
-    case arrowDownRight = "arrow-down-right"
-    case arrowLeft = "arrow-left"
-    case arrowRight = "arrow-right"
-    case arrowUp = "arrow-up"
-    case arrowUpLeft = "arrow-up-left"
-    case arrowUpRight = "arrow-up-right"
-    
-    // Navigation
-    case homeSimple = "home-simple"
-    case menu = "menu"
-    case search = "search"
-    case profile = "profile"
-    
-    // Actions
-    case bookmark = "bookmark"
-    case chat = "chat"
-    case write = "write"
-    case star = "star"
-    case report = "report"
-    
-    // Social
-    case community = "community"
-    
-    var filename: String {
-        return "\(rawValue).svg"
+    case arrowDown = "arrow-down", arrowDownLeft = "arrow-down-left", arrowDownRight = "arrow-down-right"
+    case arrowLeft = "arrow-left", arrowRight = "arrow-right", arrowUp = "arrow-up"
+    case arrowUpLeft = "arrow-up-left", arrowUpRight = "arrow-up-right"
+    case chevronDown = "chevron-down", chevronLeft = "chevron-left"
+    case chevronUp = "chevron-up", chevronRight = "chevron-right"
+    case homeSimple = "home-simple", home, menu, search, profile, bookmark, chat, write, star, report
+    case community, download, bookmarkBook = "bookmark-book", favoriteBook = "fav-book"
+    case openBook = "open-book", people, happy, starFilled = "star-filled"
+    // Line Rounded assets. Semantic action names keep feature call sites independent of filenames.
+    case add = "plus", remove = "trash", preview = "eye", selected = "check-circle"
+    case checkmark = "check-mark", clear = "close-circle", close, edit, heart, pieChart = "pie-chart", settings
+    // These three variants are not present in either supplied folder.
+    case conceal, unselected, warning, quote
+
+    static var archive: Self { .bookmarkBook }
+    static var discover: Self { .community }
+    static var stats: Self { .pieChart }
+    static var bookPlaceholder: Self { .openBook }
+    static var filter: Self { .menu }
+
+    var systemName: String? {
+        switch self {
+        case .quote: return "quote.opening"
+        case .conceal: return "eye.slash"
+        case .unselected: return "circle"
+        case .warning: return "exclamationmark.circle"
+        default: return nil
+        }
     }
-    
-    var resourcePath: String {
-        return "Resources/Icons/\(filename)"
-    }
-    
-    /// Asset name for use in Assets.xcassets
-    /// SVG files should be added to Assets.xcassets with this name
-    var assetName: String {
-        return rawValue
-    }
+
+    var assetName: String? { systemName == nil ? rawValue : nil }
 }
 
 extension Image {
-    init(designSystemIcon: DesignSystemIcon) {
-        // Icons are loaded from Assets.xcassets as vector images (iOS 13+)
-        // The asset name matches the icon's rawValue (e.g., "arrow-down", "bookmark")
-        self.init(designSystemIcon.rawValue)
+    init(designSystemIcon icon: DesignSystemIcon) {
+        if let symbol = icon.systemName { self.init(systemName: symbol) }
+        else { self.init(icon.rawValue) }
     }
 }
 
-// MARK: - Icon View Helper
 struct DesignSystemIconView: View {
     let icon: DesignSystemIcon
-    let size: CGFloat
-    let color: Color
-    
-    init(_ icon: DesignSystemIcon, size: CGFloat = 24, color: Color = .paper) {
+    var size: CGFloat = TextualIconStyle.navigation.size
+    var color: Color? = nil
+
+    init(_ icon: DesignSystemIcon, size: CGFloat = TextualIconStyle.navigation.size, color: Color? = nil) {
         self.icon = icon
         self.size = size
         self.color = color
     }
-    
+
     var body: some View {
-        // Icons are loaded from Assets.xcassets as vector images
+        Group {
+            if let color { glyph.foregroundStyle(color) }
+            else { glyph }
+        }
+        .frame(width: size, height: size)
+    }
+
+    private var glyph: some View {
         Image(designSystemIcon: icon)
             .resizable()
             .renderingMode(.template)
-            .foregroundColor(color)
-            .frame(width: size, height: size)
-            .aspectRatio(contentMode: .fit)
+            .scaledToFit()
     }
 }
 
-// MARK: - Convenience View Extension
-extension View {
-    func icon(_ icon: DesignSystemIcon, size: CGFloat = 24, color: Color = .paper) -> some View {
-        DesignSystemIconView(icon, size: size, color: color)
+extension Label where Title == Text, Icon == DesignSystemIconView {
+    init(_ title: String, textualIcon: DesignSystemIcon) {
+        self.init { Text(title) } icon: { DesignSystemIconView(textualIcon, size: TextualIconStyle.compact.size) }
+    }
+}
+
+/// Icon sizing is independent of text sizes.
+enum TextualIconStyle {
+    case navigation, compact, disclosure, checkmark, selection, shelfAdd, emptyState, rating
+    var size: CGFloat {
+        switch self {
+        case .navigation: return 24
+        case .compact: return 18
+        case .rating: return 14
+        case .disclosure: return 10
+        case .checkmark: return 12
+        case .selection: return 22
+        case .shelfAdd: return 23
+        case .emptyState: return 44
+        }
+    }
+    var weight: Font.Weight {
+        switch self {
+        case .disclosure, .checkmark: return .semibold
+        case .shelfAdd: return .light
+        default: return .regular
+        }
+    }
+}
+
+extension Font {
+    static func textualIcon(_ style: TextualIconStyle, scale: CGFloat = 1) -> Font {
+        .system(size: style.size * scale, weight: style.weight)
     }
 }

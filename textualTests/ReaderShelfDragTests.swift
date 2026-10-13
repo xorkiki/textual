@@ -5,11 +5,12 @@ import SwiftUI
 @testable import textual
 
 @MainActor struct ReaderShelfDragTests {
-    @Test func crossingShelfRowsKeepsTheSameCoverViews() async throws {
+    @Test(arguments: [ReaderBookshelf.Kind.favorites, .upNext])
+    func crossingShelfRowsKeepsTheSameCoverViews(kind: ReaderBookshelf.Kind) async throws {
         let state = ReaderShelfDrag()
         let favorites = (0..<4).map { ReaderFavorite(book: Book(title: "Cover \($0)", author: "", isbn: "", coverURL: "")) }
         func shelf(_ items: [ReaderFavorite]) -> some View {
-            ReaderBookshelf(readerName: "Reader", favorites: items, isOwner: true, open: { _ in })
+            ReaderBookshelf(readerName: "Reader", kind: kind, favorites: items, isOwner: true, open: { _ in })
                 .environment(\.readerShelfDrag, state)
                 .transaction { $0.disablesAnimations = true }
         }
@@ -25,6 +26,9 @@ import SwiftUI
         }
         let before = coverViews(host.view)
         #expect(before.count == 4)
+        // Owner shelves start locked without removing their stable cover views.
+        #expect(before.flatMap { $0.gestureRecognizers ?? [] }
+            .filter { $0 is UIPanGestureRecognizer }.allSatisfy { !$0.isEnabled })
         let oldFrames = favorites.compactMap { state.frame(for: $0.id, in: window) }
         // The drag coordinator commits after its UIKit spring finishes, with
         // SwiftUI animation disabled so there is no second reorder animation.
@@ -48,6 +52,31 @@ import SwiftUI
         let moved = try #require(state.frame(for: favorites[0].id, in: window))
         #expect(oldFrames.count == 4)
         #expect(abs(moved.maxY - oldFrames[3].maxY) < 1)
+    }
+
+    @Test func draggingRequiresEditModeButTappingStillOpensBooks() {
+        let state = ReaderShelfDrag(), id = UUID()
+        var opened = 0
+        func source(editing: Bool) -> ReaderShelfDragSource<Text> {
+            ReaderShelfDragSource(id: id, order: [id], state: state, isEnabled: editing,
+                                 move: { _, _ in }, remove: { _ in }, open: { opened += 1 }) {
+                Text("Book")
+            }
+        }
+        let coordinator = source(editing: false).makeCoordinator()
+        let pan = UIPanGestureRecognizer()
+        #expect(!coordinator.gestureRecognizerShouldBegin(pan))
+        coordinator.openBook()
+        #expect(opened == 1)
+        coordinator.parent = source(editing: true)
+        #expect(coordinator.gestureRecognizerShouldBegin(pan))
+        state.begin(id: id, token: UUID(), move: { _, _ in }, remove: { _ in })
+        #expect(!coordinator.gestureRecognizerShouldBegin(pan))
+        state.cancel()
+        coordinator.parent = source(editing: false)
+        #expect(!coordinator.gestureRecognizerShouldBegin(pan))
+        coordinator.openBook()
+        #expect(opened == 2)
     }
 
     @Test func cancelledDragRestoresNavigationWithoutEditingShelf() {
@@ -170,6 +199,79 @@ import SwiftUI
         #expect(state.place(id: ids[0], token: token, on: ids[2]))
         #expect(saved == [ids[1], ids[2], ids[0]])
         #expect([first, second, third].allSatisfy { $0.transform == .identity })
+    }
+
+    @Test func insertionTargetsIncludeGapsShortCoversAndPartialRows() {
+        let ids = (0..<4).map { _ in UUID() }
+        let slots = [
+            (id: ids[0], frame: CGRect(x: 20, y: 300, width: 100, height: 150)),
+            (id: ids[1], frame: CGRect(x: 140, y: 330, width: 100, height: 120)),
+            (id: ids[2], frame: CGRect(x: 260, y: 300, width: 100, height: 150)),
+            (id: ids[3], frame: CGRect(x: 20, y: 510, width: 100, height: 150))
+        ]
+        #expect(ReaderShelfReorder.destination(at: CGPoint(x: 190, y: 305), slots: slots) == ids[1])
+        #expect(ReaderShelfReorder.destination(at: CGPoint(x: 135, y: 375), slots: slots) == ids[1])
+        #expect(ReaderShelfReorder.destination(at: CGPoint(x: 310, y: 500), slots: slots) == ids[3])
+        #expect(ReaderShelfReorder.destination(at: CGPoint(x: 310, y: 580), slots: slots) == ids[3])
+        #expect(ReaderShelfReorder.destination(at: CGPoint(x: 390, y: 750), slots: slots) == nil)
+    }
+
+    @Test func hostedCoversMakeRoomAcrossRowsAndSurviveLayoutUpdates() async throws {
+        let ids = (0..<4).map { _ in UUID() }, state = ReaderShelfDrag(), token = UUID()
+        var saves = 0
+        func shelf() -> some View {
+            ZStack(alignment: .topLeading) {
+                ForEach(Array(ids.enumerated()), id: \.element) { index, id in
+                    ReaderShelfDragSource(id: id, order: ids, state: state, isEnabled: true,
+                                          move: { _, _ in saves += 1 }, remove: { _ in saves += 1 }, open: {}) {
+                        Text("Book \(index)").frame(width: 100, height: 150)
+                    }
+                    .frame(width: 100, height: 150)
+                    .opacity(state.bookID == id ? 0 : 1)
+                    .position(x: CGFloat(index % 3) * 120 + 70, y: CGFloat(index / 3) * 210 + 175)
+                }
+            }.frame(width: 380, height: 500)
+        }
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 393, height: 852))
+        let host = UIHostingController(rootView: shelf())
+        window.rootViewController = host
+        window.isHidden = false
+        defer { state.cancel(); window.isHidden = true; window.rootViewController = nil }
+        host.view.layoutIfNeeded()
+        func surfaces(_ view: UIView) -> [UIView] {
+            let own = (view.gestureRecognizers ?? []).contains { $0 is UIPanGestureRecognizer } ? [view] : []
+            return own + view.subviews.flatMap(surfaces)
+        }
+        let views = surfaces(host.view)
+        let slots = ids.compactMap { state.frame(for: $0, in: window) }
+        #expect(views.count == 4)
+        #expect(slots.count == 4)
+        guard views.count == 4, slots.count == 4 else { return }
+        let lastSurface = try #require(views.first { abs($0.convert($0.bounds, to: window).midY - slots[3].midY) < 1 })
+        let lastCover = try #require(lastSurface.subviews.first)
+        state.begin(id: ids[0], token: token, order: ids,
+                    move: { _, _ in saves += 1 }, remove: { _ in saves += 1 })
+        state.track(CGPoint(x: slots[3].midX, y: slots[3].midY), in: window)
+        // Force the parent update that used to overwrite outer-view transforms.
+        host.rootView = shelf()
+        try await Task.sleep(for: .milliseconds(450))
+        host.view.layoutIfNeeded()
+        let shifted = lastCover.convert(lastCover.bounds, to: window)
+        #expect(abs(shifted.midX - slots[2].midX) < 1)
+        #expect(abs(shifted.maxY - slots[2].maxY) < 1)
+        #expect(lastSurface.transform == .identity)
+        #expect(state.frame(for: ids[3], in: window) == slots[3])
+        #expect(saves == 0)
+        state.track(CGPoint(x: slots[0].midX, y: slots[0].midY), in: window)
+        try await Task.sleep(for: .milliseconds(450))
+        #expect(lastCover.transform == .identity)
+        #expect(state.targetID == nil)
+        state.track(CGPoint(x: slots[3].midX, y: slots[3].midY), in: window)
+        state.track(CGPoint(x: -200, y: -200), in: window)
+        try await Task.sleep(for: .milliseconds(450))
+        #expect(lastCover.transform == .identity)
+        #expect(state.targetID == nil)
+        #expect(saves == 0)
     }
 
     @Test func canceledLiveInsertionKeepsOriginalOrder() {

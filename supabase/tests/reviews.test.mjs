@@ -9,7 +9,7 @@ await db.exec(`create role anon; create role authenticated; create role service_
 create schema auth; create table auth.users(id uuid primary key);
 create function auth.uid() returns uuid language sql stable as $$ select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid $$;
 grant usage on schema auth to anon,authenticated; grant execute on function auth.uid() to anon,authenticated;`);
-for (const file of ['001_textual_accounts.sql','004_storygraph_import.sql','007_reader_reviews.sql']) {
+for (const file of ['001_textual_accounts.sql','004_storygraph_import.sql','007_reader_reviews.sql','008_catalog_owned_classification.sql']) {
     await db.exec(await readFile(`${root}/supabase/migrations/${file}`,'utf8'));
 }
 const uid = n => `00000000-0000-0000-0000-${String(n).padStart(12,'0')}`;
@@ -46,6 +46,9 @@ await denied(()=>db.exec('select * from public.textual_review_summaries'));
 await denied(()=>db.exec('update public.textual_review_book_links set work_id=book_id'));
 assert.equal((await save(1,{rev:0})).status,'conflict');checks++;
 assert.deepEqual(await summary(),{minimumContributors:5});checks++;
+assert.equal(safelyRead(first.review.content,'genres'),undefined);checks++;
+function safelyRead(value,key) { return value[key]; }
+assert.equal((await db.query("select count(*)::int n from public.textual_review_terms where kind='genre'")).rows[0].n,0);checks++;
 const changed=await save(1,{id:edition,rev:1,payload:content({pace:'medium'})});
 assert.equal(changed.review.revision,2);checks++;
 await asUser(2);
@@ -53,6 +56,7 @@ assert.equal((await db.query('select * from public.textual_reviews')).rows.lengt
 assert.equal((await db.query('select public.textual_read_own_review($1,$2) result',[uid(2),book])).rows[0].result,null);checks++;
 for(let n=2;n<=5;n++){await asUser(n);await save(n,{payload:content({moods:n===5?[]:['hopeful']})});}
 let s=await summary();
+assert.equal(s.genres,undefined);assert.equal(s.fiction,undefined);checks++;
 assert.deepEqual(s.pace,{contributors:5,counts:{fast:4,medium:1}});checks++;
 assert.equal(s.moods,undefined);checks++;
 assert.equal(JSON.stringify(s).includes('Private prose'),false);checks++;
@@ -93,5 +97,8 @@ await db.query('update public.textual_library_entries set deleted_at=now() where
 await asUser(6);
 await denied(()=>save(6,{rev:3}));
 assert.equal((await save(6,{rev:3,deleted:true,payload:content({contribute:false})})).status,'applied');checks++;
+await asUser(2);
+const minimal = content(); delete minimal.genres; delete minimal.fiction;
+assert.equal((await save(2,{rev:1,payload:minimal})).status,'applied');checks++;
 await db.close();
 console.log(`${checks} review database checks passed (isolated in-memory PostgreSQL).`);

@@ -218,6 +218,88 @@ struct LibraryRepositoryTests {
         #expect(book.importedReading?.upNextPosition == 0)
     }
 
+    @Test func dateAddedPersistsAndSurvivesSyncAndLaterEdits() async throws {
+        let container = try makeContainer()
+        let user = UUID()
+        let transport = MockLibraryTransport(userID: user)
+        let repository = LibraryRepository(userID: user, modelContext: container.mainContext, transport: transport)
+        let book = makeBook()
+        let originalDate = try #require(book.addedAt)
+        try repository.add(book)
+        let payload = try JSONDecoder().decode(LibraryChange.self, from: #require(book.pendingOperationData))
+        #expect(payload.readingData?.libraryAddedAt == originalDate)
+        await repository.synchronize()
+        #expect(book.addedAt == originalDate)
+        #expect(book.importedReading?.libraryAddedAt == originalDate)
+        book.title = "Edited later"
+        try repository.save(book)
+        await repository.synchronize()
+        let reopened = ModelContext(container)
+        let restored = try #require(reopened.fetch(FetchDescriptor<Book>()).first)
+        #expect(ArchiveSort.dateAdded(to: restored) == originalDate)
+        #expect(restored.importedReading?.libraryAddedAt == originalDate)
+        let reimported = UpNextQueue.metadata(for: makeBook()).preservingQueue(from: restored.importedReading)
+        #expect(reimported.libraryAddedAt == originalDate)
+    }
+
+    @Test func archiveAdditionSavesEveryChosenStatusWithItsOutbox() throws {
+        for status in BookAddStatus.allCases {
+            let container = try makeContainer()
+            let user = UUID()
+            let repository = LibraryRepository(userID: user, modelContext: container.mainContext,
+                                              transport: MockLibraryTransport(userID: user))
+            let saved = try repository.add(makeBook(), status: status)
+            let reopened = ModelContext(container)
+            let book = try #require(reopened.fetch(FetchDescriptor<Book>()).first)
+            let payload = try JSONDecoder().decode(LibraryChange.self, from: #require(book.pendingOperationData))
+            #expect(book.id == saved.id)
+            #expect(book.importedReading?.status == status.rawValue)
+            #expect(payload.readingData?.status == status.rawValue)
+            #expect(book.importedReading?.lastDateRead == nil)
+            #expect(book.importedReading?.periods.isEmpty == true)
+            if status == .read { #expect(book.importedReading?.journal?.progress?.value == 100) }
+        }
+    }
+
+    @Test func readdingRemovedBookUsesChosenStatusAndPreservesItsNotes() throws {
+        let container = try makeContainer()
+        let user = UUID()
+        let repository = LibraryRepository(userID: user, modelContext: container.mainContext,
+                                          transport: MockLibraryTransport(userID: user))
+        let book = try repository.add(makeBook(), status: .tbr)
+        try BookReadingActions.append("Keep my note", action: .note, book: book,
+                                      context: container.mainContext, repository: repository)
+        try repository.remove(book)
+        let restored = try repository.add(makeBook(), status: .currentlyReading)
+        #expect(restored.id == book.id)
+        #expect(!restored.isRemovedFromLibrary)
+        #expect(restored.importedReading?.status == "currently-reading")
+        #expect(restored.importedReading?.journal?.notes.first?.text == "Keep my note")
+        #expect(try container.mainContext.fetchCount(FetchDescriptor<Book>()) == 1)
+    }
+
+    @Test func addingExistingBookDoesNotOverwriteItsReadingStatus() throws {
+        let container = try makeContainer()
+        let user = UUID()
+        let repository = LibraryRepository(userID: user, modelContext: container.mainContext,
+                                          transport: MockLibraryTransport(userID: user))
+        let book = try repository.add(makeBook(), status: .currentlyReading)
+        let again = try repository.add(makeBook(), status: .dnf)
+        #expect(again.id == book.id)
+        #expect(again.importedReading?.status == "currently-reading")
+        #expect(try container.mainContext.fetchCount(FetchDescriptor<Book>()) == 1)
+    }
+
+    @Test func failedArchiveAdditionLeavesNoBookBehind() throws {
+        let container = try makeContainer()
+        let user = UUID()
+        let repository = LibraryRepository(userID: user, modelContext: container.mainContext,
+                                          transport: MockLibraryTransport(userID: user))
+        repository.stop()
+        #expect(throws: LibraryRepositoryError.self) { try repository.add(makeBook(), status: .read) }
+        #expect(try container.mainContext.fetchCount(FetchDescriptor<Book>()) == 0)
+    }
+
     private func makeContainer() throws -> ModelContainer {
         let schema = Schema([Book.self, Tag.self, LibrarySyncState.self])
         return try ModelContainer(for: schema, configurations: ModelConfiguration(schema: schema, isStoredInMemoryOnly: true))
