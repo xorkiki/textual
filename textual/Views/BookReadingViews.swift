@@ -218,25 +218,9 @@ struct BookReadingSection: View {
     }
 
     private func quoteCard(_ entry: ReadingJournal.Entry) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(entry.text).textStyle(.bodyMedium)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            if let page = entry.page {
-                Text("p. \(page)").textStyle(.bodySmall).foregroundStyle(Color.ghost)
-            }
-        }
-        .padding(14)
-        .background(Color.velvet, in: RoundedRectangle(cornerRadius: TextualLayout.cardRadius))
-        .contentShape(RoundedRectangle(cornerRadius: TextualLayout.cardRadius))
-        .onTapGesture { route = .init(book: book, action: .quote, editingEntry: entry) }
-        .textualContextMenu {
-            Button { route = .init(book: book, action: .quote, editingEntry: entry) } label: {
-                Label("Edit", systemImage: "pencil")
-            }
-            Button(role: .destructive) { quoteToDelete = entry } label: {
-                Label("Delete", systemImage: "trash")
-            }
-        }
+        ReadingQuoteCard(entry: entry,
+                         edit: { route = .init(book: book, action: .quote, editingEntry: entry) },
+                         delete: { quoteToDelete = entry })
     }
 
     private func journalSection(_ title: String, entries: [ReadingJournal.Entry], action: BookQuickAction) -> some View {
@@ -268,6 +252,109 @@ struct BookReadingSection: View {
     }
 
     private func deleteQuote(_ entry: ReadingJournal.Entry) {
+        do {
+            try BookReadingActions.deleteEntry(id: entry.id, action: .quote, book: book,
+                                               context: context, repository: repository)
+            Task { await repository?.synchronize() }
+        } catch { self.error = error.localizedDescription }
+    }
+}
+
+/// Shared by book detail's Saved quotes and My quotes: tap to edit, hold for edit/delete.
+struct ReadingQuoteCard: View {
+    let entry: ReadingJournal.Entry
+    let edit: () -> Void
+    let delete: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(entry.text).textStyle(.bodyMedium)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if let page = entry.page {
+                Text("p. \(page)").textStyle(.bodySmall).foregroundStyle(Color.ghost)
+            }
+        }
+        .padding(14)
+        .background(Color.velvet, in: RoundedRectangle(cornerRadius: TextualLayout.cardRadius))
+        .contentShape(RoundedRectangle(cornerRadius: TextualLayout.cardRadius))
+        .onTapGesture(perform: edit)
+        .textualContextMenu {
+            Button(action: edit) { Label("Edit", systemImage: "pencil") }
+            Button(role: .destructive, action: delete) { Label("Delete", systemImage: "trash") }
+        }
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction(named: "Edit", edit)
+        .accessibilityAction(named: "Delete", delete)
+    }
+}
+
+/// My Archive → My quotes: every saved quote, grouped by book, laid out like My reviews.
+struct ReaderQuotesView: View {
+    @Environment(\.reviewLibraryRepository) private var repository
+    @Environment(\.modelContext) private var context
+    @Environment(\.dismiss) private var dismiss
+    @Query(filter: #Predicate<Book> { !$0.isRemovedFromLibrary }, sort: \Book.title) private var books: [Book]
+    @State private var route: BookActionRoute?
+    @State private var quoteToDelete: (book: Book, entry: ReadingJournal.Entry)?
+    @State private var error: String?
+    @State private var search = ""
+
+    private var rows: [(book: Book, quotes: [ReadingJournal.Entry])] {
+        ReadingQuoteRows.rows(books: books, search: search)
+    }
+    var body: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 24) {
+                TextualSearchField("Search your quotes", text: $search)
+                if rows.isEmpty {
+                    Text(search.isEmpty ? "The words that stayed with you." : "No matching quotes.")
+                        .textStyle(.sectionHeading)
+                    Text(search.isEmpty ? "Open a book in your archive to save your first quote." : "Try another title, author, or phrase.")
+                        .textStyle(.bodyMedium).foregroundStyle(Color.ghost)
+                }
+                ForEach(rows, id: \.book.id) { row in
+                    VStack(alignment: .leading, spacing: TextualLayout.groupGap) {
+                        NavigationLink { BookDetailView(book: row.book) } label: {
+                            VStack(alignment: .leading, spacing: TextualLayout.itemGap) {
+                                Text(row.book.title).textStyle(.sectionHeading)
+                                Text(row.book.author).textStyle(.bodySmall).foregroundStyle(Color.ghost)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        ForEach(row.quotes) { entry in
+                            ReadingQuoteCard(entry: entry,
+                                             edit: { route = .init(book: row.book, action: .quote, editingEntry: entry) },
+                                             delete: { quoteToDelete = (row.book, entry) })
+                        }
+                        Button("Add quote") { route = .init(book: row.book, action: .quote) }
+                            .buttonStyle(TextualButtonStyle(variant: .tonal))
+                    }
+                    .padding(.vertical, TextualLayout.groupGap)
+                    .overlay(alignment: .bottom) { Divider().overlay(Color.ghost.opacity(0.3)) }
+                }
+            }
+            .padding(TextualLayout.pageInset)
+            .padding(.bottom, TextualNavigationLayout.bottomExtent)
+            .frame(maxWidth: 650).frame(maxWidth: .infinity)
+        }
+        .foregroundStyle(Color.paper).background(Color.inkwell.ignoresSafeArea())
+        .navigationBarBackButtonHidden(true)
+        .textualBackHeader(title: "My quotes") { dismiss() }
+        .refreshable { await repository?.synchronize() }
+        .sheet(item: $route) { BookActionSheet(route: $0, repository: repository) }
+        .confirmationDialog("Delete this quote?",
+            isPresented: Binding(get: { quoteToDelete != nil }, set: { if !$0 { quoteToDelete = nil } }),
+            titleVisibility: .visible) {
+            Button("Delete", role: .destructive) {
+                if let target = quoteToDelete { deleteQuote(target.entry, from: target.book); quoteToDelete = nil }
+            }
+        }
+        .alert("Couldn’t save reading", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
+            Button("OK") { error = nil }
+        } message: { Text(error ?? "") }
+    }
+
+    private func deleteQuote(_ entry: ReadingJournal.Entry, from book: Book) {
         do {
             try BookReadingActions.deleteEntry(id: entry.id, action: .quote, book: book,
                                                context: context, repository: repository)

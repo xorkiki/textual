@@ -142,6 +142,30 @@ final class BookReadingActionTests: XCTestCase {
         XCTAssertEqual(BookQuickAction.progress.icon, .pieChart)
         XCTAssertEqual(BookQuickAction.finish.icon, .star)
     }
+
+    func testMyQuotesGroupsByBookAndSearchesTitleAuthorAndText() throws {
+        let (container, book) = try fixture()
+        let context = container.mainContext
+        let other = Book(title: "Quiet book", author: "Writer", isbn: "")
+        let empty = Book(title: "No quotes", author: "Writer", isbn: "")
+        context.insert(other); context.insert(empty)
+        try BookReadingActions.append("The sea was calm.", page: 12, action: .quote, book: book, context: context, repository: nil)
+        try BookReadingActions.append("Nothing lasts.", action: .quote, book: book, context: context, repository: nil)
+        try BookReadingActions.append("A note, not a quote.", action: .note, book: other, context: context, repository: nil)
+        try BookReadingActions.append("Stay a while.", action: .quote, book: other, context: context, repository: nil)
+        let all = [book, other, empty]
+
+        let rows = ReadingQuoteRows.rows(books: all, search: "")
+        XCTAssertEqual(Set(rows.map(\.book.id)), [book.id, other.id])
+        XCTAssertEqual(rows.first { $0.book.id == book.id }?.quotes.count, 2)
+        XCTAssertEqual(rows.first { $0.book.id == other.id }?.quotes.map(\.text), ["Stay a while."])
+
+        XCTAssertEqual(ReadingQuoteRows.rows(books: all, search: "author").first?.quotes.count, 2)
+        let byText = ReadingQuoteRows.rows(books: all, search: " SEA ")
+        XCTAssertEqual(byText.map(\.book.id), [book.id])
+        XCTAssertEqual(byText.first?.quotes.map(\.page), [12])
+        XCTAssertTrue(ReadingQuoteRows.rows(books: all, search: "missing").isEmpty)
+    }
 }
 
 private actor OfflineReadingTransport: LibrarySyncTransport {

@@ -5,7 +5,7 @@ struct LibraryView: View {
     var repository: LibraryRepository? = nil
     var bottomNavigationInset: CGFloat = 0
     @Query(filter: #Predicate<Book> { !$0.isRemovedFromLibrary }, sort: \Book.title) private var books: [Book]
-    private enum Destination: Hashable { case upNext, allBooks, reviews }
+    private enum Destination: Hashable { case upNext, allBooks, reviews, quotes }
     @State private var path: [Destination] = []
     @State private var selectedBook: Book?
     @State private var readingBook: Book?
@@ -67,18 +67,12 @@ struct LibraryView: View {
                         }.contentShape(Rectangle())
                     }.accessibilityLabel("All books, \(books.count) books. Browse your archive")
 
-                    NavigationLink(value: Destination.reviews) {
-                        HStack(spacing: 12) {
-                            TextualHeading(title: "My reviews")
-                            Spacer()
-                            DesignSystemIconView(.arrowRight, size: 20, color: .ghost)
-                                .accessibilityHidden(true)
-                        }
-                        .padding(.horizontal, TextualLayout.pageInset)
-                        .frame(minHeight: TextualLayout.touchTarget)
-                        .contentShape(Rectangle())
+                    VStack(alignment: .leading, spacing: 0) {
+                        archiveLink("My reviews", to: .reviews)
+                            .accessibilityIdentifier("archive.myReviews")
+                        archiveLink("My quotes", to: .quotes)
+                            .accessibilityIdentifier("archive.myQuotes")
                     }
-                    .accessibilityIdentifier("archive.myReviews")
                 }
                 .padding(.top, 12)
                 .padding(.bottom, bottomNavigationInset + 24)
@@ -87,6 +81,8 @@ struct LibraryView: View {
                 switch destination {
                 case .reviews:
                     ReaderReviewsView()
+                case .quotes:
+                    ReaderQuotesView()
                 case .upNext:
                     UpNextView(repository: repository, bottomNavigationInset: bottomNavigationInset,
                         onBack: { path.removeAll() })
@@ -153,6 +149,20 @@ struct LibraryView: View {
             Text("\(count)").textStyle(.bodySmall).foregroundStyle(Color.ghost)
             DesignSystemIconView(.arrowRight, size: 20, color: .ghost).accessibilityHidden(true)
         }.padding(.horizontal, TextualLayout.pageInset).contentShape(Rectangle())
+    }
+
+    private func archiveLink(_ title: String, to destination: Destination) -> some View {
+        NavigationLink(value: destination) {
+            HStack(spacing: 12) {
+                TextualHeading(title: title)
+                Spacer()
+                DesignSystemIconView(.arrowRight, size: 20, color: .ghost)
+                    .accessibilityHidden(true)
+            }
+            .padding(.horizontal, TextualLayout.pageInset)
+            .frame(minHeight: TextualLayout.touchTarget)
+            .contentShape(Rectangle())
+        }
     }
 
     @discardableResult

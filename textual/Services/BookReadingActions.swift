@@ -81,6 +81,23 @@ struct BookActionRoute: Identifiable {
     var editingEntry: ReadingJournal.Entry? = nil
 }
 
+/// My quotes groups saved quotes by book, newest quote first. Search matches the
+/// title or author (showing every quote) or the quote text (showing only matches).
+enum ReadingQuoteRows {
+    static func rows(books: [Book], search: String) -> [(book: Book, quotes: [ReadingJournal.Entry])] {
+        let search = search.trimmingCharacters(in: .whitespacesAndNewlines)
+        return books.compactMap { book -> (book: Book, quotes: [ReadingJournal.Entry])? in
+            let quotes = (book.importedReading?.journal?.quotes ?? []).sorted { $0.createdAt > $1.createdAt }
+            guard !quotes.isEmpty else { return nil }
+            if search.isEmpty || book.title.localizedCaseInsensitiveContains(search)
+                || book.author.localizedCaseInsensitiveContains(search) { return (book, quotes) }
+            let matches = quotes.filter { $0.text.localizedCaseInsensitiveContains(search) }
+            return matches.isEmpty ? nil : (book, matches)
+        }
+        .sorted { $0.quotes[0].createdAt > $1.quotes[0].createdAt }
+    }
+}
+
 /// All quick sheets and full reading controls share the same mutation path and
 /// the existing account-private library outbox (including offline/conflict handling).
 @MainActor
