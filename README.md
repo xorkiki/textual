@@ -114,6 +114,7 @@ All models include Codable conformance for seamless Supabase synchronization.
 - A separate local library for each Supabase project and account, with queued book additions/removals and private library sync.
 - Explicit conflict resolution and an optional import of the original device library.
 - Unified title/author catalog search, paginated results, book details, and cached covers.
+- Discover (The Archive tab): For You, Trending, Explore, and Friends as cover-only masonry grids. Tap opens details; hold and slide saves or updates a book. See [Discover](#discover).
 
 StoryGraph CSV imports preserve and sync private reading statuses, dates, ratings, reviews, and export metadata. Editing those fields, custom shelves, follows/activity feeds, Apple Sign-In, and the Reader remain planned. Imported tags are preserved as metadata; custom shelf membership is not yet synced.
 
@@ -129,7 +130,7 @@ Page direction saved from Kiki’s October 8, 2026 request (future work):
 |---|---|
 | Home | Profile, current read, and an up-next pile |
 | My Archive | Saved books and custom categories |
-| The Archive | What friends are reading and suggested reads |
+| The Archive | Discover: suggested reads now; what friends are reading once follows exist |
 | Stats | Personal reading statistics |
 | Menu | Miscellaneous things people can access |
 
@@ -343,3 +344,61 @@ accepts review submissions without genre fields, hides legacy classification ans
 review responses and summaries, and exposes only mood terms to the review picker. It is
 deployed with 007 as of October 12, 2026. The app also refreshes
 incomplete public classifications using verified Google Books and Open Library matches.
+
+
+## Discover
+
+The Archive tab is Discover: **For You · Trending · Explore · Friends**. Each tab is one
+uninterrupted two-column grid of real book covers at their natural proportions, with no titles,
+ratings, labels, or rankings. Tapping a cover opens the existing book details. Pressing, holding,
+and sliding uses the existing quick-action menu: books not yet saved offer Read, Currently reading,
+TBR, and DNF; saved books offer quote, progress, finish + rate, and note. Saving goes through the
+existing archive repository and sync, so a discovered book never becomes a second record.
+
+- **For You** ranks on the device from the reader's own archive: shelf favorites (top five weighted
+  highest), ratings, statuses, authors, and genres. Ranking is deterministic and needs no AI service,
+  and it aims for about 70% personal and 30% exploratory picks. An empty archive gets a diverse mix
+  of trending, new, and Explore books, and personalization grows automatically as the archive does.
+- **Trending** combines Apple Books charts (and NYT best sellers, if enabled) with normalized
+  per-source scores.
+- **Explore** interleaves 26 subject, era, and literary-origin pools plus new releases in a
+  per-session seeded order.
+- **Friends** is an honest empty state until a follow system exists.
+
+Collections are refreshed by the `discovery-refresh` Edge Function on a `pg_cron` schedule and
+cached in the account's SwiftData store. Discover opens instantly from cache, works offline,
+and refreshes quietly. Full design, data sources, terms, and ranking rules:
+[docs/discovery.md](docs/discovery.md).
+
+### Apply the Discover backend
+
+1. Apply `supabase/migrations/009_discovery.sql` once (after 001 and 007), then
+   `010_discovery_service_grants.sql`, in the SQL Editor. Both are applied to the existing project
+   as of October 13, 2026.
+2. Deploy `supabase/functions/discovery-refresh` with JWT verification **off**. It verifies
+   its own caller token, for example:
+   `supabase functions deploy discovery-refresh --no-verify-jwt`.
+3. Optional function secrets: `NYT_API_KEY` (read the NYT terms in docs/discovery.md first;
+   non-commercial only, 24-hour cache limit, visible attribution) and `GOOGLE_BOOKS_API_KEY`
+   (a server key restricted to the Books API, not the iOS-restricted app key).
+4. Put the project URL into `supabase/setup_discovery_schedule.sql` and run it. It enables
+   `pg_cron` and `pg_net`, creates the caller token in Vault, and schedules the three jobs. Run the
+   commented first-fill lines to populate collections immediately.
+
+Until the backend is applied, Discover shows a small retry message rather than inventing books.
+To check refresh health, run `select * from public.textual_discovery_health();` in the SQL Editor;
+`stale` is true when a collection has missed two scheduled refreshes.
+
+### Discover tests
+
+`textualTests/DiscoveryTests.swift` and `textualUITests/DiscoverUITests.swift` run in Xcode. The UI
+tests use a DEBUG-only harness (`--discover-ui-test`) with a captured Open Library fixture and an
+in-memory store. Backend checks run offline:
+
+```bash
+node supabase/tests/discovery-logic.test.mjs
+```
+
+```bash
+PGLITE_MODULE=/path/to/node_modules/@electric-sql/pglite/dist/index.js TEXTUAL_ROOT="$PWD" node supabase/tests/discovery.test.mjs
+```

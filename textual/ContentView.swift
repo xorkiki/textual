@@ -106,10 +106,7 @@ struct TextualTabView: View {
         case .profile:
             ReaderProfileView(account: account)
         case .home:
-            NavigationStack {
-                Color.inkwell.ignoresSafeArea()
-                    .textualPageTitle("The Archive")
-            }
+            DiscoverView(repository: repository, isActive: selectedTab == .home)
         case .community:
             // This destination will host followed readers and their feed.
             NavigationStack {

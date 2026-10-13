@@ -21,6 +21,7 @@ struct AccountLibraryHost: View {
                     .modelContainer(store.container)
                     .environment(\.readerReviews, store.reviews)
                     .environment(\.reviewLibraryRepository, store.repository)
+                    .environment(\.discoveryRepository, store.discovery)
             } else if let openError {
                 ContentUnavailableView {
                     Label("Library unavailable", textualIcon: .warning)
@@ -49,6 +50,7 @@ struct AccountLibraryHost: View {
         .onDisappear {
             store?.repository.stop()
             store?.reviews.stop()
+            store?.discovery.stop()
             store = nil
         }
     }
@@ -70,6 +72,7 @@ final class AccountLibraryStore {
     let container: ModelContainer
     let repository: LibraryRepository
     let reviews: ReaderReviewStore
+    let discovery: DiscoveryRepository
     private(set) var legacyBookCount = 0
     @ObservationIgnored private let legacyContainer: ModelContainer
     @ObservationIgnored private let userID: UUID
@@ -89,13 +92,16 @@ final class AccountLibraryStore {
             .appendingPathComponent(project, isDirectory: true)
             .appendingPathComponent(userID.uuidString.lowercased(), isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let schema = Schema([Book.self, Tag.self, LibrarySyncState.self, ReaderProfileDraft.self, ReaderReviewDraft.self])
+        let schema = Schema([Book.self, Tag.self, LibrarySyncState.self, ReaderProfileDraft.self, ReaderReviewDraft.self,
+                             DiscoveryCacheEntry.self, DiscoveryCollectionState.self])
         let configuration = ModelConfiguration(schema: schema,
             url: directory.appendingPathComponent("library.store"), cloudKitDatabase: .none)
         container = try ModelContainer(for: schema, configurations: [configuration])
         repository = LibraryRepository(client: client, userID: userID, modelContext: container.mainContext)
         reviews = ReaderReviewStore(userID: userID, context: container.mainContext,
             transport: SupabaseReaderReviewTransport(client: client), repository: repository)
+        discovery = DiscoveryRepository(context: container.mainContext,
+                                        transport: SupabaseDiscoveryTransport(client: client))
         repository.afterSynchronization = { [weak reviews] in
             try? await reviews?.flush()
         }

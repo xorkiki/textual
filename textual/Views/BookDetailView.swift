@@ -78,7 +78,8 @@ struct BookDetailView: View {
                             .textStyle(.bodySmall)
                             .foregroundColor(.ghost)
 
-                        if !book.isRemovedFromLibrary {
+                        // Catalog-only books (Discover, shared shelves) have no status until saved.
+                        if !book.isRemovedFromLibrary, book.modelContext != nil {
                             TextualDropdown(label: "Reading status", title: reading.statusLabel,
                                 options: [
                                     .init(value: "currently-reading", title: "Currently reading"),

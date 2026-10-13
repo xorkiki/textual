@@ -279,8 +279,8 @@ struct ReadingQuoteCard: View {
         .contentShape(RoundedRectangle(cornerRadius: TextualLayout.cardRadius))
         .onTapGesture(perform: edit)
         .textualContextMenu {
-            Button(action: edit) { Label("Edit", systemImage: "pencil") }
-            Button(role: .destructive, action: delete) { Label("Delete", systemImage: "trash") }
+            Button(action: edit) { Label("Edit", textualIcon: .edit) }
+            Button(role: .destructive, action: delete) { Label("Delete", textualIcon: .remove) }
         }
         .accessibilityAddTraits(.isButton)
         .accessibilityAction(named: "Edit", edit)

@@ -255,6 +255,8 @@ struct BookCoverImage: View {
     var identity: BookCoverIdentity? = nil
     var alternateURLs: [String] = []
     var onResolved: ((String) -> Void)? = nil
+    /// Dense grids show only the quiet placeholder surface while a cover loads.
+    var showsProgress = true
     @State private var loader = BookCoverLoader()
 
     private static let pipeline = ImagePipeline(
@@ -303,7 +305,7 @@ struct BookCoverImage: View {
                 Rectangle().fill(Color.coverPlaceholder)
                     .overlay {
                         if loader.isLoading {
-                            ProgressView().tint(.paper)
+                            if showsProgress { ProgressView().tint(.paper) }
                         } else {
                             DesignSystemIconView(.bookPlaceholder).foregroundColor(.ghost)
                         }

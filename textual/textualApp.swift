@@ -37,6 +37,8 @@ struct textualApp: App {
             #if DEBUG
             if ProcessInfo.processInfo.arguments.contains("--hold-slide-ui-test") {
                 HoldSlideTestHarness()
+            } else if ProcessInfo.processInfo.arguments.contains("--discover-ui-test") {
+                DiscoverTestHarness()
             } else {
                 ContentView(legacyContainer: sharedModelContainer)
             }

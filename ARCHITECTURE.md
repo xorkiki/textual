@@ -40,7 +40,7 @@ Every profile response checks both its request generation and active account. Pr
 Application Support/Accounts/<supabase-project-host>/<user-uuid>/library.store
 ```
 
-`TextualTabView` sits inside the store-ready branch of `AccountLibraryHost`. It uses a native `TabView` with stable tagged children and hidden system tab chrome, plus an overlaid icon-only capsule. The capsule uses 24-point physical bottom and side margins; only the container’s bottom safe area is ignored, preserving keyboard avoidance. Selection starts at The Archive (`discover`) once per account-scoped shell. Tab switches retain the store, repository, and My Archive (`library`) state. LibraryView owns its compact header and decorative top/bottom gradients, so books scroll beneath the controls without a large-title gap or inward viewport mask. Its content padding includes the shared navigation extent and measured sync-banner height; Retry/Review stay above the capsule. Account settings and explicit legacy import live in Menu. The other page features remain deferred as listed in README.
+`TextualTabView` sits inside the store-ready branch of `AccountLibraryHost`. It uses a native `TabView` with stable tagged children and hidden system tab chrome, plus an overlaid icon-only capsule. The capsule uses 24-point physical bottom and side margins; only the container’s bottom safe area is ignored, preserving keyboard avoidance. Selection starts at The Archive (`home`, rendered by `DiscoverView`) once per account-scoped shell. Tab switches retain the store, repository, and My Archive (`library`) state. LibraryView owns its compact header and decorative top/bottom gradients, so books scroll beneath the controls without a large-title gap or inward viewport mask. Its content padding includes the shared navigation extent and measured sync-banner height; Retry/Review stay above the capsule. Account settings and explicit legacy import live in Menu. The other page features remain deferred as listed in README.
 
 `AccountLibraryHost` is keyed by user ID. On disappearance/account change it stops the repository and releases its container; signing out preserves local data but removes it from the visible account. The original device store is never silently attached to a newly signed-in user.
 
@@ -80,6 +80,7 @@ Sync runs on library opening, supported mutations, foregrounding, network recove
 | `textual_library_entries` | Owner-private book membership, title/author/ISBN/cover snapshot, revision, and tombstone. |
 | `textual_upsert_profile` | Atomic profile save/username claim with authenticated ownership assertion. |
 | `textual_sync_library` | Account-bound batch writes, idempotency, conflict results, and revision-based pulls. |
+| `textual_discovery_*` | Shared Discover collections from public providers only; read through `textual_read_discovery`, written only by the service-role `discovery-refresh` function. See `docs/discovery.md`. |
 
 RLS limits private row reads to their owner. Validating security-definer RPCs are the authenticated write interface. The current library protocol does not include ratings, reading status, notes, tags, or social activity.
 
@@ -105,6 +106,7 @@ The prepared catalog cache/Edge Function is not deployed or wired into the iPhon
 | Account stores/import/conflicts | `Views/AccountLibraryHost.swift` |
 | Sync repository/transport/DTOs | `Services/LibraryRepository.swift` |
 | Library/search/details | `Views/LibraryView.swift`, `Views/AddBookView.swift`, `Views/BookDetailView.swift` |
+| Discover (The Archive tab) | `Views/DiscoverView.swift`, `Views/MasonryGrid.swift`, `Services/Discovery*.swift`; backend in `supabase/functions/discovery-refresh` and `supabase/migrations/009_discovery.sql` |
 | Catalog view models | `ViewModels/AddBookViewModel.swift`, `ViewModels/BookDetailViewModel.swift` |
 | Catalog service | `Services/BookCatalogService.swift` |
 | Local models | `BookModel.swift`, `TagModel.swift`, `LibrarySyncState.swift` |
