@@ -59,6 +59,9 @@ struct ReaderPublicContent: Codable, Equatable, Sendable {
     var sentence: String
     var favorites: [ReaderFavorite]
     var avatarPath: String? = nil
+    /// Known genres of completed books, computed here with the Stats rules. The
+    /// server returns it to visitors only while the owner shows Genres.
+    var genreBreakdown: [ReaderGenreShare]? = nil
 }
 
 struct PublicReaderProfile: Codable, Equatable, Identifiable, Sendable {
@@ -80,6 +83,8 @@ final class ReaderProfileDraft {
     @Attribute(.externalStorage) var avatarData: Data? = nil
     var avatarDataPath: String? = nil
     var avatarNeedsUpload: Bool = false
+    /// Shelf additions waiting to publish with the card; cleared once the server decides.
+    var pendingActivityData: Data? = nil
 
     init(userID: UUID, content: ReaderPublicContent) throws {
         self.userID = userID
@@ -133,7 +138,24 @@ enum ReaderPersonality {
         let stats = ReaderCardStats(reads: completed.reduce(0) { $0 + $1.completedReads },
             genres: Set(completed.flatMap(\.genres)).count,
             rereads: completed.reduce(0) { $0 + max(0, $1.completedReads - 1) })
-        return ReaderPublicContent(stats: stats, sentence: sentence(completed), favorites: Array(favorites.prefix(ReaderShelf.limit)))
+        return ReaderPublicContent(stats: stats, sentence: sentence(completed), favorites: Array(favorites.prefix(ReaderShelf.limit)),
+                                   genreBreakdown: genreBreakdown(completed))
+    }
+
+    /// The card's genre count, broken down: known genres only (as the card counts
+    /// them), books without one under "Unclassified", weighted like Stats by reads.
+    static func genreBreakdown(_ evidence: [Evidence]) -> [ReaderGenreShare] {
+        let completed = evidence.filter { $0.completedReads > 0 }
+        let books = Dictionary(GenreStat.counts(completed.map { (genres: $0.genres, count: 1) }).map { ($0.name, $0.count) },
+                               uniquingKeysWith: { first, _ in first })
+        var seen = Set<String>()
+        return GenreStat.counts(completed.map { (genres: $0.genres, count: $0.completedReads) })
+            .compactMap { stat -> ReaderGenreShare? in
+                let name = String(stat.name.prefix(80))
+                guard seen.insert(name).inserted else { return nil }
+                return ReaderGenreShare(name: name, books: books[stat.name] ?? 0, reads: stat.count)
+            }
+            .prefix(100).map { $0 }
     }
 
     static func sentence(_ evidence: [Evidence]) -> String {

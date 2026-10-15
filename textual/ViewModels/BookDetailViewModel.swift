@@ -312,7 +312,15 @@ final class ReaderReviewEditorModel {
         } catch { reload(); show(error) }
     }
     private func reload() {
-        do { draft = try store.draft(for: book); content = presentation.editorContent }
+        do {
+            draft = try store.draft(for: book)
+            content = presentation.editorContent
+            // A brand-new review starts shared only while activity sharing is known to be on.
+            // Saved and imported reviews keep their own visibility.
+            if presentation.content == nil, !presentation.hasDraftChanges, store.sharesNewReviews {
+                content.visibility = .public
+            }
+        }
         catch { show(error) }
     }
     private func show(_ error: Error) {

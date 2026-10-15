@@ -2,9 +2,10 @@ import SwiftUI
 import SwiftData
 import UIKit
 
-enum DiscoverTab: String, CaseIterable, Identifiable {
+enum DiscoverTab: String, TextualTabItem {
     case forYou, trending, explore, friends
     var id: String { rawValue }
+    var identifier: String { rawValue }
     var title: String {
         switch self {
         case .forYou: return "For You"
@@ -71,7 +72,10 @@ final class DiscoverFeed {
 struct DiscoverView: View {
     let repository: LibraryRepository
     var isActive = true
+    /// Friends' empty state routes to Community; supplied by the tab shell.
+    var openCommunity: () -> Void = {}
     @Environment(\.discoveryRepository) private var discovery
+    @Environment(\.socialStore) private var social
     @Environment(\.scenePhase) private var scenePhase
     @Query(filter: #Predicate<Book> { !$0.isRemovedFromLibrary }) private var books: [Book]
     @State private var selection: DiscoverTab? = .forYou
@@ -99,7 +103,7 @@ struct DiscoverView: View {
             .scrollPosition(id: $selection)
             .scrollIndicators(.hidden)
             .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
-            .textualPageHeader { DiscoverTabBar(selection: $selection) }
+            .textualPageHeader { TextualTabBar(selection: $selection, identifierPrefix: "discover.tab") }
             .navigationDestination(item: $openedBook) { book in
                 BookDetailView(book: book, showsReadingActivity: book.modelContext != nil)
             }
@@ -119,11 +123,16 @@ struct DiscoverView: View {
             await discovery?.refreshAll()
         }
         .onChange(of: discovery?.revision) { _, _ in rebuildFeeds() }
-        .onChange(of: books.map(\.id), initial: true) { _, _ in archive = DiscoveryArchiveIndex(books: books) }
+        .onChange(of: books.map(\.id), initial: true) { _, _ in
+            archive = DiscoveryArchiveIndex(books: books)
+            offerFriends()
+        }
+        .onChange(of: social?.discoveryItems) { _, _ in offerFriends() }
         .onChange(of: selection) { previous, current in
             if let previous { feeds[previous]?.adoptPending() }
+            if current == .friends { Task { await social?.openDiscovery() } }
             // An empty tab checks again when opened (still subject to failure backoff).
-            if let current, feeds[current]?.items.isEmpty == true { Task { await refreshQuietly(current) } }
+            else if let current, feeds[current]?.items.isEmpty == true { Task { await refreshQuietly(current) } }
         }
         .onChange(of: isActive) { _, active in
             if !active { feeds.values.forEach { $0.adoptPending() } }
@@ -136,8 +145,27 @@ struct DiscoverView: View {
 
     @ViewBuilder
     private func page(_ tab: DiscoverTab) -> some View {
-        if tab == .friends {
-            DiscoverFriendsPage()
+        if tab == .friends, let feed = feeds[.friends] {
+            if let social, social.discoveryHasFriends == false {
+                DiscoverFriendsEmptyPage(hasFriends: false, openCommunity: openCommunity)
+            } else if let social, social.discoveryHasFriends == true, feed.items.isEmpty,
+                      !social.isLoadingDiscovery, !social.discoveryFailed {
+                DiscoverFriendsEmptyPage(hasFriends: true, openCommunity: openCommunity)
+            } else if social == nil {
+                DiscoverFriendsEmptyPage(hasFriends: false, openCommunity: openCommunity)
+            } else {
+                // Same grid, cells, and gestures as every other tab; pages come from the server.
+                DiscoverFeedPage(feed: feed, isLoading: social?.isLoadingDiscovery == true
+                                    || (social?.discoveryHasFriends == nil && social?.discoveryFailed != true),
+                                 failed: social?.discoveryFailed == true,
+                                 refresh: { await refreshFriends() }, retry: { Task { await refreshFriends() } },
+                                 onNearEnd: { Task { await social?.loadMoreDiscovery() } }) { item, size in
+                    DiscoverCoverCell(item: item, size: size, archived: archive.book(for: item),
+                        open: { open(item) }, add: { add(item, status: $0) },
+                        quickAction: { route = BookActionRoute(book: $0, action: $1) })
+                }
+                .accessibilityIdentifier("discover.page.friends")
+            }
         } else if let feed = feeds[tab] {
             DiscoverFeedPage(feed: feed, isLoading: isLoading(tab), failed: hasFailed(tab),
                              attribution: tab == .trending ? attribution(feed) : nil,
@@ -160,6 +188,21 @@ struct DiscoverView: View {
         feeds[.forYou]?.offer(discovery.items(.forYou))
     }
 
+    /// Friends' books outside the reader's archive (edition, ISBN, or work match),
+    /// like For You. A reordered list waits until the tab leaves view or a pull.
+    private func offerFriends() {
+        guard let social, let feed = feeds[.friends] else { return }
+        let exhausted = feed.visibleCount >= feed.items.count
+        feed.offer(social.discoveryItems.filter { !archive.contains($0) })
+        if exhausted { feed.loadMore() }
+    }
+
+    private func refreshFriends() async {
+        await social?.refreshDiscovery()
+        offerFriends()
+        feeds[.friends]?.adoptPending()
+    }
+
     private func refresh(_ tab: DiscoverTab) async {
         await discovery?.refreshAll(force: true)
         rebuildFeeds()
@@ -170,7 +213,7 @@ struct DiscoverView: View {
         switch tab {
         case .trending: await discovery?.refresh(.trending)
         case .explore, .forYou: await discovery?.refreshAll()
-        case .friends: return
+        case .friends: await social?.openDiscovery()
         }
     }
 
@@ -219,42 +262,6 @@ struct DiscoverView: View {
     }
 }
 
-// MARK: - Tabs
-
-private struct DiscoverTabBar: View {
-    @Binding var selection: DiscoverTab?
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    var body: some View {
-        ViewThatFits(in: .horizontal) {
-            tabs.frame(maxWidth: .infinity)
-            ScrollView(.horizontal) { tabs.padding(.horizontal, TextualLayout.pageInset) }
-                .scrollIndicators(.hidden)
-        }
-        .frame(minHeight: TextualLayout.touchTarget)
-    }
-
-    private var tabs: some View {
-        HStack(spacing: 28) {
-            ForEach(DiscoverTab.allCases) { tab in
-                Button {
-                    withAnimation(reduceMotion ? nil : .snappy) { selection = tab }
-                } label: {
-                    Text(tab.title)
-                        .font(.designSystem(.uiButton))
-                        .foregroundStyle(selection == tab ? Color.paper : Color.ghost)
-                        .fixedSize()
-                        .frame(minHeight: TextualLayout.touchTarget)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityAddTraits(selection == tab ? .isSelected : [])
-                .accessibilityIdentifier("discover.tab.\(tab.rawValue)")
-            }
-        }
-    }
-}
-
 // MARK: - Pages
 
 private struct DiscoverFeedPage<Cell: View>: View {
@@ -264,6 +271,8 @@ private struct DiscoverFeedPage<Cell: View>: View {
     var attribution: String?
     let refresh: () async -> Void
     let retry: () -> Void
+    /// Server-paginated tabs fetch their next page here; cached tabs only reveal more.
+    var onNearEnd: (() -> Void)? = nil
     @ViewBuilder let cell: (DiscoverItem, CGSize) -> Cell
 
     var body: some View {
@@ -274,7 +283,8 @@ private struct DiscoverFeedPage<Cell: View>: View {
                     if feed.items.isEmpty {
                         if failed && !isLoading { unavailable } else { DiscoverPlaceholderGrid() }
                     } else {
-                        MasonryGrid(items: feed.visibleItems, aspect: \.aspect, onNearEnd: feed.loadMore, cell: cell)
+                        MasonryGrid(items: feed.visibleItems, aspect: \.aspect,
+                                    onNearEnd: { feed.loadMore(); onNearEnd?() }, cell: cell)
                         if let attribution {
                             Link(attribution, destination: URL(string: "https://developer.nytimes.com")!)
                                 .font(.designSystem(.caption))
@@ -322,14 +332,26 @@ private struct DiscoverPlaceholderGrid: View {
     }
 }
 
-/// Friends needs the follow system; until it exists this stays honest and empty.
-private struct DiscoverFriendsPage: View {
+/// Honest empty states: no friends yet, or friends who haven't shared any books.
+private struct DiscoverFriendsEmptyPage: View {
+    let hasFriends: Bool
+    let openCommunity: () -> Void
+
     var body: some View {
         ScrollView {
-            TextualEmptyState(title: "Nothing here yet", icon: .people,
-                detail: "When you follow other readers, the books they’re reading and loving will gather here.")
-                .foregroundStyle(Color.paper)
-                .padding(.top, 96)
+            VStack(spacing: TextualLayout.groupGap) {
+                TextualEmptyState(title: "Nothing here yet", icon: .people,
+                    detail: hasFriends ? "When your friends read, rate, and shelve books, they’ll gather here."
+                                       : "When you add friends, the books they’re reading and loving will gather here.")
+                    .foregroundStyle(Color.paper)
+                if !hasFriends {
+                    Button("Find friends", action: openCommunity)
+                        .buttonStyle(TextualButtonStyle(variant: .tonal))
+                        .frame(maxWidth: 200)
+                        .accessibilityIdentifier("discover.friends.findFriends")
+                }
+            }
+            .padding(.top, 96)
         }
         .scrollIndicators(.hidden)
         .accessibilityIdentifier("discover.page.friends")

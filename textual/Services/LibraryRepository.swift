@@ -47,12 +47,14 @@ struct LibraryChange: Codable, Sendable {
     let deleted: Bool
     let book: LibraryBookSnapshot
     var readingData: StoryGraphReadingData? = nil
+    /// Omitted when empty, so the payload stays valid for servers without social activity.
+    var activity: [SocialActivityIntent]? = nil
 
     enum CodingKeys: String, CodingKey {
         case operationID = "operation_id"
         case entryID = "entry_id"
         case expectedRevision = "expected_revision"
-        case deleted, book
+        case deleted, book, activity
         case readingData = "reading_data"
     }
 }
@@ -163,6 +165,8 @@ final class LibraryRepository {
     @ObservationIgnored private var syncTask: Task<Void, Never>?
     @ObservationIgnored private var networkMonitor: NWPathMonitor?
     @ObservationIgnored var afterSynchronization: (@MainActor () async -> Void)?
+    /// Supplied by the account's social settings; nil whenever sharing is off or uncertain.
+    @ObservationIgnored var activityStamp: (@MainActor () -> SocialActivityStamp?)?
     @ObservationIgnored private var active = true
     @ObservationIgnored private var generation = UUID()
 
@@ -209,6 +213,7 @@ final class LibraryRepository {
         if let existing = try allBooks().first(where: { $0.googleBooksVolumeId == identity }) {
             if existing.isRemovedFromLibrary {
                 if let status { try BookReadingActions.prepareArchiveStatus(status, for: existing) }
+                if status == .currentlyReading { appendActivity([.started], to: existing) }
                 existing.isRemovedFromLibrary = false
                 existing.title = book.title
                 existing.author = book.author
@@ -222,10 +227,25 @@ final class LibraryRepository {
             throw LibraryRepositoryError.wrongContext
         }
         if let status { try BookReadingActions.prepareArchiveStatus(status, for: book) }
+        if status == .currentlyReading { appendActivity([.started], to: book) }
         if book.modelContext == nil { modelContext.insert(book) }
         book.isRemovedFromLibrary = false
         try save(book)
         return book
+    }
+
+    /// Stages explicit reader actions on the book; the caller's save commits them with
+    /// the mutation and its outbox payload. No stamp (sharing off/unknown) → nothing.
+    func appendActivity(_ activities: [ReadingActivity], to book: Book) {
+        guard !activities.isEmpty, let stamp = activityStamp?() else { return }
+        let intents = activities.map { activity -> SocialActivityIntent in
+            switch activity {
+            case .started: return stamp.intent(.started)
+            case .finished: return stamp.intent(.finished)
+            case .quote(let id): return stamp.intent(.quote, quoteID: id)
+            }
+        }
+        book.pendingActivityData = SocialActivityIntent.encodeList(SocialActivityIntent.decodeList(book.pendingActivityData) + intents)
     }
 
     /// Mutations and their exact retry payload are committed together locally.
@@ -374,6 +394,8 @@ final class LibraryRepository {
         book.pendingOperationID = nil
         book.pendingOperationData = nil
         book.syncConflictData = nil
+        // The synced version wins, so this device's unsent actions did not happen there.
+        book.pendingActivityData = nil
         apply(remote, to: book)
         try commit()
         syncState = .idle
@@ -421,6 +443,7 @@ final class LibraryRepository {
                 let pendingBooks = try modelContext.fetch(pendingQuery)
                 var changes: [LibraryChange] = []
                 var submitted: [UUID: Book] = [:]
+                var submittedActivity: [UUID: Set<UUID>] = [:]
                 var batchBytes = 0
                 for book in pendingBooks {
                     let operation: LibraryChange
@@ -438,6 +461,7 @@ final class LibraryRepository {
                     batchBytes += encodedSize
                     changes.append(operation)
                     submitted[operation.operationID] = book
+                    submittedActivity[operation.operationID] = Set(operation.activity?.map(\.id) ?? [])
                 }
                 try commit()
                 let request = LibrarySyncRequest(expectedUserID: userID, changes: changes,
@@ -453,7 +477,7 @@ final class LibraryRepository {
                     guard let book = submitted[result.operationID] else {
                         throw LibraryRepositoryError.invalidResponse
                     }
-                    try acknowledge(result, for: book)
+                    try acknowledge(result, for: book, sentActivity: submittedActivity[result.operationID] ?? [])
                 }
                 if !response.entries.isEmpty {
                     var index = MergeIndex(try allBooks())
@@ -499,12 +523,18 @@ final class LibraryRepository {
         }
     }
 
-    private func acknowledge(_ result: LibrarySyncResponse.Result, for book: Book) throws {
+    private func acknowledge(_ result: LibrarySyncResponse.Result, for book: Book, sentActivity: Set<UUID> = []) throws {
         let remote = result.entry
         let isCurrentOperation = book.pendingOperationID == result.operationID
         if result.status == .conflict {
+            // Unsent actions stay with the local edit and travel with its resolution.
             try recordConflict(remote, for: book)
             return
+        }
+        if !sentActivity.isEmpty {
+            // The server has decided these intents (published or not); never resend them.
+            let remaining = SocialActivityIntent.decodeList(book.pendingActivityData).filter { !sentActivity.contains($0.id) }
+            book.pendingActivityData = SocialActivityIntent.encodeList(remaining)
         }
         book.serverEntryID = remote.id
         book.canonicalBookID = remote.bookID
@@ -623,9 +653,11 @@ final class LibraryRepository {
             if reading == nil { reading = UpNextQueue.metadata(for: book) }
             if reading?.libraryAddedAt == nil { reading?.libraryAddedAt = addedAt }
         }
+        let activity = SocialActivityIntent.decodeList(book.pendingActivityData)
         return LibraryChange(operationID: operationID, entryID: book.serverEntryID ?? book.id,
                              expectedRevision: book.serverRevision, deleted: book.isRemovedFromLibrary,
-                             book: try snapshot(for: book), readingData: reading)
+                             book: try snapshot(for: book), readingData: reading,
+                             activity: activity.isEmpty || book.isRemovedFromLibrary ? nil : activity)
     }
 
     private func snapshot(for book: Book) throws -> LibraryBookSnapshot {
@@ -701,6 +733,7 @@ final class LibraryRepository {
                 book.pendingOperationID = saved.pendingOperationID
                 book.pendingOperationData = saved.pendingOperationData
                 book.syncConflictData = saved.syncConflictData
+                book.pendingActivityData = saved.pendingActivityData
                 book.isRemovedFromLibrary = saved.isRemovedFromLibrary
                 book.tags = saved.tags.compactMap {
                     modelContext.model(for: $0.persistentModelID) as? Tag

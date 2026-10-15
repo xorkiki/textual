@@ -43,6 +43,7 @@ struct TextualTabView: View {
     @State private var shelfDrag = ReaderShelfDrag()
     @State private var queueDrag = ReaderShelfDrag()
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.socialStore) private var social
     @State private var readingLibrary = ReadingLibraryCache()
 
     var body: some View {
@@ -81,7 +82,13 @@ struct TextualTabView: View {
             shelfDrag.cancel()
             queueDrag.cancel()
         }
-        .onChange(of: scenePhase) { _, phase in if phase != .active { shelfDrag.cancel(); queueDrag.cancel() } }
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active { shelfDrag.cancel(); queueDrag.cancel() }
+            // Revalidate friend content and privacy settings on every return to the app.
+            if phase == .active { Task { await social?.revalidate() } }
+        }
+        // Settings first: new actions can only be shared once sharing is known to be on.
+        .task { await social?.settings.refresh() }
         .onDisappear { shelfDrag.cancel(); queueDrag.cancel() }
         .onOpenURL { url in
             if ReaderProfileRoute.username(url) != nil { selectedTab = .profile }
@@ -106,13 +113,10 @@ struct TextualTabView: View {
         case .profile:
             ReaderProfileView(account: account)
         case .home:
-            DiscoverView(repository: repository, isActive: selectedTab == .home)
+            DiscoverView(repository: repository, isActive: selectedTab == .home,
+                         openCommunity: { selectedTab = .community })
         case .community:
-            // This destination will host followed readers and their feed.
-            NavigationStack {
-                Color.inkwell.ignoresSafeArea()
-                    .textualPageTitle(tab.title)
-            }
+            CommunityView(isActive: selectedTab == .community)
         }
     }
 }
@@ -289,6 +293,8 @@ private struct TextualMenuPage: View {
     @State private var openArchiveAfterImport = false
     @State private var showImport = false
     @State private var showAccount = false
+    @State private var showPrivacy = false
+    @Environment(\.socialStore) private var social
     @State private var confirmImport = false
     @State private var importError: String?
 
@@ -303,6 +309,9 @@ private struct TextualMenuPage: View {
                         Divider().overlay(Color.velvet)
                         menuRow("Import reading data") { showImport = true }
                             .accessibilityIdentifier("menu.import")
+                        Divider().overlay(Color.velvet)
+                        menuRow("Privacy & sharing") { showPrivacy = true }
+                            .accessibilityIdentifier("menu.privacy")
                         Divider().overlay(Color.velvet)
                     }
                     .frame(maxWidth: 480)
@@ -321,6 +330,9 @@ private struct TextualMenuPage: View {
             }) {
                 StoryGraphImportView(repository: repository, accountEmail: account.email,
                                      openArchive: { openArchiveAfterImport = true })
+            }
+            .sheet(isPresented: $showPrivacy) {
+                SocialPrivacySettingsView().environment(\.socialStore, social)
             }
             .sheet(isPresented: $showAccount) {
                 VStack(spacing: 0) {

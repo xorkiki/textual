@@ -6,6 +6,16 @@ import Supabase
 protocol ReaderProfileTransport: ReaderAvatarTransport {
     func fetch(username: String) async throws -> PublicReaderProfile?
     func publish(userID: UUID, revision: Int, content: ReaderPublicContent) async throws -> PublicReaderProfile
+    /// Shelf additions travel with the card in one server transaction.
+    func publish(userID: UUID, revision: Int, content: ReaderPublicContent,
+                 activity: [SocialActivityIntent]) async throws -> PublicReaderProfile
+}
+
+extension ReaderProfileTransport {
+    func publish(userID: UUID, revision: Int, content: ReaderPublicContent,
+                 activity: [SocialActivityIntent]) async throws -> PublicReaderProfile {
+        try await publish(userID: userID, revision: revision, content: content)
+    }
 }
 
 actor SupabaseReaderProfileTransport: ReaderProfileTransport {
@@ -32,14 +42,22 @@ actor SupabaseReaderProfileTransport: ReaderProfileTransport {
     }
 
     func publish(userID: UUID, revision: Int, content: ReaderPublicContent) async throws -> PublicReaderProfile {
+        try await publish(userID: userID, revision: revision, content: content, activity: [])
+    }
+
+    func publish(userID: UUID, revision: Int, content: ReaderPublicContent,
+                 activity: [SocialActivityIntent]) async throws -> PublicReaderProfile {
         guard try await client.auth.session.user.id == userID else { throw LibraryRepositoryError.accountChanged }
         struct Parameters: Encodable {
             let p_expected_user_id: UUID
             let p_expected_revision: Int
             let p_content: ReaderPublicContent
+            /// Omitted when empty, so publishing works before the social migration.
+            let p_activity: [SocialActivityIntent]?
         }
         return try await client.rpc("textual_publish_reader_profile", params: Parameters(
-            p_expected_user_id: userID, p_expected_revision: revision, p_content: content)).execute().value
+            p_expected_user_id: userID, p_expected_revision: revision, p_content: content,
+            p_activity: activity.isEmpty ? nil : activity)).execute().value
     }
 }
 
@@ -63,13 +81,21 @@ final class ReaderProfileStore {
         return try context.fetch(FetchDescriptor<ReaderProfileDraft>(predicate: #Predicate { $0.userID == id })).first
     }
 
+    /// `addedFavorites` are shelf books the reader just chose; with a sharing stamp
+    /// they become shelf intents committed in the same save as the card.
     @discardableResult
-    func update(_ content: ReaderPublicContent) throws -> ReaderProfileDraft {
+    func update(_ content: ReaderPublicContent, addedFavorites: [UUID] = [],
+                stamp: SocialActivityStamp? = nil) throws -> ReaderProfileDraft {
         let data = try JSONEncoder().encode(content)
         if let draft = try draft() {
             if draft.content != content {
                 draft.contentData = data
                 draft.needsUpload = true
+                if let stamp, !addedFavorites.isEmpty {
+                    let intents = addedFavorites.map { stamp.intent(.shelf, favoriteID: $0) }
+                    draft.pendingActivityData = SocialActivityIntent.encodeList(
+                        SocialActivityIntent.decodeList(draft.pendingActivityData) + intents)
+                }
                 try context.save()
             }
             return draft
@@ -113,6 +139,7 @@ final class ReaderProfileStore {
                     // The last response may have been lost after the server committed it.
                     draft.serverRevision = remote.revision
                     draft.needsUpload = false
+                    draft.pendingActivityData = nil
                     if draft.avatarDataPath == remote.content.avatarPath { draft.avatarNeedsUpload = false }
                 } else if !draft.hasLoadedRemote && draft.content?.favorites.isEmpty == true {
                     // Recover the saved shelf on a fresh device, keeping current local stats.
@@ -144,11 +171,16 @@ final class ReaderProfileStore {
                 try context.save()
             }
             guard draft.needsUpload, let content = draft.content else { message = nil; return }
-            let published = try await transport.publish(userID: userID, revision: draft.serverRevision, content: content)
+            let activity = SocialActivityIntent.decodeList(draft.pendingActivityData)
+            let published = try await transport.publish(userID: userID, revision: draft.serverRevision,
+                                                        content: content, activity: activity)
             try Task.checkCancellation()
             // Edits made while this request was in flight remain queued.
             draft.serverRevision = published.revision
             draft.needsUpload = draft.content != content
+            let sent = Set(activity.map(\.id))
+            draft.pendingActivityData = SocialActivityIntent.encodeList(
+                SocialActivityIntent.decodeList(draft.pendingActivityData).filter { !sent.contains($0.id) })
             try context.save()
             message = nil
         } catch is CancellationError {
@@ -165,6 +197,7 @@ final class ReaderProfileStore {
             content.avatarPath = remote.content.avatarPath
             draft.contentData = try JSONEncoder().encode(content)
             draft.avatarNeedsUpload = false
+            draft.pendingActivityData = nil
             if draft.avatarDataPath != content.avatarPath {
                 draft.avatarData = nil
                 draft.avatarDataPath = nil

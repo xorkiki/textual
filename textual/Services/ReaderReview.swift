@@ -58,10 +58,12 @@ struct ReaderReviewMutation: Codable, Sendable {
     let expectedRevision: Int64
     let content: ReaderReviewContent
     let deleted: Bool
+    /// Present only when this save shares the review with friends for the first time.
+    var activity: [SocialActivityIntent]? = nil
     enum CodingKeys: String, CodingKey {
         case expectedUserID = "p_expected_user_id", operationID = "p_operation_id"
         case bookID = "p_book_id", expectedRevision = "p_expected_revision"
-        case content = "p_content", deleted = "p_deleted"
+        case content = "p_content", deleted = "p_deleted", activity = "p_activity"
     }
 }
 struct ReaderReviewResult: Codable, Sendable {
@@ -117,7 +119,8 @@ final class ReaderReviewDraft {
         if conflict != nil { return "Needs your attention" }
         if pending != nil { return "Waiting to sync" }
         if hasUnsavedChanges { return "Draft saved on this device" }
-        return savedContent == nil ? "No review yet" : "Saved · Only you"
+        guard let saved = savedContent else { return "No review yet" }
+        return saved.visibility == .public ? "Saved · Shared with friends" : "Saved · Only you"
     }
 
     init(userID: UUID, localBookID: UUID, content: ReaderReviewContent) throws {

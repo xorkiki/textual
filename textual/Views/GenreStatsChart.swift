@@ -64,7 +64,8 @@ struct GenreTiles {
 
 struct GenreStatsChart: View {
     let genres: [GenreStat]
-    let onSelect: (String) -> Void
+    /// Nil for a visitor's read-only breakdown: rows show values without opening books.
+    let onSelect: ((String) -> Void)?
 
     var body: some View {
         let values = genres
@@ -86,48 +87,57 @@ struct GenreStatsChart: View {
 
 private struct GenreBarChart: View {
     let genres: [GenreStat]
-    let onSelect: (String) -> Void
+    let onSelect: ((String) -> Void)?
     @ScaledMetric(relativeTo: .caption) private var rowHeight: CGFloat = 44
 
     var body: some View {
         let maximum = max(genres.map(\.count).max() ?? 1, 1)
         VStack(spacing: 6) {
             ForEach(genres) { genre in
-                Button { onSelect(genre.name) } label: {
-                    HStack(spacing: 12) {
-                        Text(genre.name)
-                            .font(.designSystem(.uiLabel))
-                            .foregroundStyle(Color.paper)
-                            .frame(width: 104, alignment: .leading)
-                            .fixedSize(horizontal: false, vertical: true)
-                        GeometryReader { geometry in
-                            ZStack(alignment: .leading) {
-                                Capsule()
-                                    .fill(Color.paper.opacity(0.04))
-                                Capsule()
-                                    .fill(genre.color)
-                                    .frame(width: geometry.size.width * CGFloat(genre.count) / CGFloat(maximum))
-                            }
-                        }
-                        .frame(height: 16)
-                        Text(genre.count.formatted())
-                            .font(.designSystem(.uiLabel))
-                            .monospacedDigit()
-                            .foregroundStyle(Color.ghost)
-                            .frame(minWidth: 26, alignment: .trailing)
-                    }
-                    .frame(minHeight: rowHeight)
-                    .contentShape(Rectangle())
+                if let onSelect {
+                    Button { onSelect(genre.name) } label: { row(genre, maximum: maximum) }
+                        .buttonStyle(.plain)
+                        .disabled(genre.count == 0)
+                        .accessibilityHint("Show matching books")
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityAddTraits(.isButton)
+                        .accessibilityAction { onSelect(genre.name) }
+                        .accessibilityLabel(genre.name)
+                        .accessibilityValue("\(genre.count) books")
+                } else {
+                    row(genre, maximum: maximum)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(genre.name)
+                        .accessibilityValue("\(genre.count) books")
                 }
-                .buttonStyle(.plain)
-                .disabled(genre.count == 0)
-                .accessibilityHint("Show matching books")
-                .accessibilityElement(children: .ignore)
-                .accessibilityAddTraits(.isButton)
-                .accessibilityAction { onSelect(genre.name) }
-                .accessibilityLabel(genre.name)
-                .accessibilityValue("\(genre.count) books")
             }
         }
+    }
+
+    private func row(_ genre: GenreStat, maximum: Int) -> some View {
+        HStack(spacing: 12) {
+            Text(genre.name)
+                .font(.designSystem(.uiLabel))
+                .foregroundStyle(Color.paper)
+                .frame(width: 104, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+            GeometryReader { geometry in
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(Color.paper.opacity(0.04))
+                    Capsule()
+                        .fill(genre.color)
+                        .frame(width: geometry.size.width * CGFloat(genre.count) / CGFloat(maximum))
+                }
+            }
+            .frame(height: 16)
+            Text(genre.count.formatted())
+                .font(.designSystem(.uiLabel))
+                .monospacedDigit()
+                .foregroundStyle(Color.ghost)
+                .frame(minWidth: 26, alignment: .trailing)
+        }
+        .frame(minHeight: rowHeight)
+        .contentShape(Rectangle())
     }
 }

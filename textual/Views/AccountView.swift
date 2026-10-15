@@ -13,6 +13,7 @@ struct AccountView: View {
     @State private var isSubmittingSignup = false
     @State private var confirmationKind: ConfirmationKind = .signup
     @State private var resendAvailableAt: [String: Date] = [:]
+    @State private var showsDeleteConfirmation = false
 
     private enum Step: Hashable {
         case welcome, signupEmail, signupPassword, signupFirstName, signupUsername
@@ -105,6 +106,15 @@ struct AccountView: View {
             draft.password = ""
             draft.confirmation = ""
             draft.emailCode = ""
+        }
+        .confirmationDialog("Delete your Textual account?", isPresented: $showsDeleteConfirmation,
+                            titleVisibility: .visible) {
+            Button("Delete Account", role: .destructive) {
+                Task { _ = await session.deleteAccount() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This permanently deletes your account and the data associated with it. This can’t be undone.")
         }
     }
 
@@ -397,6 +407,12 @@ struct AccountView: View {
             codeEntryLink("I have a recovery code", identifier: "auth.haveRecoveryCode",
                           kind: .passwordReset, sourceEmail: session.email)
                 .disabled(session.email == nil)
+            Button("Delete account") { showsDeleteConfirmation = true }
+                .font(.designSystem(.bodySmall))
+                .foregroundStyle(Color.ghost)
+                .frame(minHeight: 44)
+                .accessibilityIdentifier("account.delete")
+                .disabled(isBusy)
         }
     }
 

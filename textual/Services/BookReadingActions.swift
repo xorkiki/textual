@@ -74,6 +74,13 @@ enum BookQuickAction: String, CaseIterable, Identifiable {
     var menuAction: HoldSlideAction { .init(id: rawValue, title: title, icon: icon) }
 }
 
+/// A reader action that can become friends' activity. Progress updates, notes, and
+/// edits are deliberately absent: they never publish.
+enum ReadingActivity: Equatable, Sendable {
+    case started, finished
+    case quote(UUID)
+}
+
 struct BookActionRoute: Identifiable {
     let id = UUID()
     let book: Book
@@ -135,10 +142,11 @@ enum BookReadingActions {
         guard !text.isEmpty, text.count <= 4_000, action == .quote || action == .note else {
             throw ReadingActionError.invalidText
         }
-        try save(book, context: context, repository: repository) { reading in
+        var entry = ReadingJournal.Entry(text: text)
+        if action == .quote { entry.page = page }
+        try save(book, context: context, repository: repository,
+                 activity: action == .quote ? [.quote(entry.id)] : []) { reading in
             var journal = reading.journal ?? .init()
-            var entry = ReadingJournal.Entry(text: text)
-            if action == .quote { entry.page = page }
             if action == .quote { journal.quotes.append(entry) }
             else { journal.notes.append(entry) }
             reading.journal = journal
@@ -182,7 +190,11 @@ enum BookReadingActions {
         guard ["currently-reading", "read", "to-read", "did-not-finish"].contains(status) else {
             throw ReadingActionError.invalidStatus
         }
-        try save(book, context: context, repository: repository) { reading in
+        let previous = UpNextQueue.metadata(for: book).status
+        var activity: [ReadingActivity] = []
+        if status == "currently-reading", previous != "currently-reading" { activity.append(.started) }
+        if status == "read", previous != "read" { activity.append(.finished) }
+        try save(book, context: context, repository: repository, activity: activity) { reading in
             if status == "read", reading.status != "read" {
                 let formatter = DateFormatter()
                 formatter.calendar = Calendar(identifier: .gregorian)
@@ -207,20 +219,25 @@ enum BookReadingActions {
     }
 
     private static func save(_ book: Book, context: ModelContext, repository: LibraryRepository?,
+                             activity: [ReadingActivity] = [],
                              mutate: (inout StoryGraphReadingData) -> Void) throws {
         guard book.modelContext === context, !book.isRemovedFromLibrary else { throw ReadingActionError.unavailable }
         let original = book.storyGraphData
+        let originalActivity = book.pendingActivityData
         var reading = UpNextQueue.metadata(for: book)
         mutate(&reading)
         let data = try JSONEncoder().encode(reading)
         // Leave headroom for PostgreSQL's spaced jsonb representation (128 KiB limit).
         guard data.count <= 96_000 else { throw ReadingActionError.full }
         book.storyGraphData = data
+        // Intents commit in the same local save as the mutation and its outbox payload.
+        repository?.appendActivity(activity, to: book)
         do {
             if let repository { try repository.save(book) }
             else { try context.save() }
         } catch {
             book.storyGraphData = original
+            book.pendingActivityData = originalActivity
             throw error
         }
     }

@@ -1,0 +1,30 @@
+{
+  "comment": "Shared by supabase/tests/social.test.mjs (textual_completed_count) and textualTests/SocialTests.swift (ReadingStatsFilter.completedCount). Each case is merged over base.",
+  "base": {
+    "version": 1,
+    "sourceKey": "0000000000000000000000000000000000000000000000000000000000000000",
+    "status": "to-read",
+    "periods": [],
+    "format": "",
+    "moods": [],
+    "pace": "",
+    "tags": [],
+    "originalFields": {}
+  },
+  "cases": [
+    { "name": "read without history", "reading": { "status": "read" }, "completed": 1 },
+    { "name": "read count wins", "reading": { "status": "read", "readCount": 3, "periods": [{ "startedOn": null, "finishedOn": "2024-01-02" }] }, "completed": 3 },
+    { "name": "explicit zero and not read", "reading": { "status": "to-read", "readCount": 0, "periods": [{ "finishedOn": "2024-01-01" }] }, "completed": 0 },
+    { "name": "two dated periods", "reading": { "status": "currently-reading", "periods": [{ "startedOn": "2024-01-01", "finishedOn": "2024-02-01" }, { "startedOn": "2024-03-01", "finishedOn": "2024-03-05" }] }, "completed": 2 },
+    { "name": "invalid finish falls back to last read", "reading": { "status": "currently-reading", "periods": [{ "finishedOn": "2024-02-30" }], "lastDateRead": "2024/02/03" }, "completed": 1 },
+    { "name": "start after finish is ignored", "reading": { "status": "did-not-finish", "periods": [{ "startedOn": "2024-05-01", "finishedOn": "2024-04-01" }] }, "completed": 0 },
+    { "name": "read with zero count", "reading": { "status": "read", "readCount": 0 }, "completed": 1 },
+    { "name": "slash dates", "reading": { "status": "to-read", "periods": [{ "finishedOn": "2023/12/31" }] }, "completed": 1 },
+    { "name": "year zero", "reading": { "status": "to-read", "periods": [{ "finishedOn": "0000-01-01" }] }, "completed": 0 },
+    { "name": "leap day", "reading": { "status": "to-read", "periods": [{ "finishedOn": "2024-02-29" }] }, "completed": 1 },
+    { "name": "not a leap day", "reading": { "status": "to-read", "periods": [{ "finishedOn": "2023-02-29" }] }, "completed": 0 },
+    { "name": "same-day rereads stay separate", "reading": { "status": "read", "periods": [{ "finishedOn": "2024-06-01" }, { "finishedOn": "2024-06-01" }] }, "completed": 2 },
+    { "name": "dnf with old count", "reading": { "status": "did-not-finish", "readCount": 2 }, "completed": 2 },
+    { "name": "padded whitespace date", "reading": { "status": "to-read", "periods": [{ "finishedOn": " 2022-07-04\n" }] }, "completed": 1 }
+  ]
+}

@@ -38,6 +38,7 @@ final class AccountSession {
     private(set) var isLoadingProfile = false
     private(set) var suggestedFirstName = ""
     private(set) var suggestedUsername = ""
+    private(set) var accountDeletionGeneration = 0
 
     // This stores only a UI recovery marker, never credentials or tokens.
     @ObservationIgnored private let recoveryDefaults: UserDefaults
@@ -256,6 +257,29 @@ final class AccountSession {
     }
 
     @discardableResult
+    func deleteAccount() async -> Bool {
+        guard let client = beginOperation(), let ownerID = userID else {
+            if errorMessage == nil { errorMessage = "Please sign in again before deleting your account." }
+            return false
+        }
+        defer { isWorking = false }
+        do {
+            try await client.rpc("textual_delete_account", params: DeleteAccountParameters(
+                p_expected_user_id: ownerID
+            )).execute()
+            // Clear this device's credentials after the server has deleted the account.
+            try? await client.auth.signOut(scope: .local)
+            apply(nil)
+            accountDeletionGeneration += 1
+            message = "Your account has been deleted."
+            return true
+        } catch {
+            show(error)
+            return false
+        }
+    }
+
+    @discardableResult
     func handleOpenURL(_ url: URL) async -> Bool {
         guard Self.acceptsAuthURL(url) else { return false }
         // Email callbacks can arrive while a sign-up/reset request is finishing.
@@ -342,6 +366,10 @@ final class AccountSession {
         let p_expected_user_id: UUID
         let p_first_name: String
         let p_username: String
+    }
+
+    private struct DeleteAccountParameters: Encodable {
+        let p_expected_user_id: UUID
     }
 
     private func beginProfileLoad(for ownerID: UUID) {

@@ -39,6 +39,7 @@ private struct ReadingEntrySheet: View {
     let editingEntry: ReadingJournal.Entry?
     @Environment(\.modelContext) private var context
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.socialStore) private var social
     @State private var text = ""
     @State private var pageText = ""
     @State private var unit: ReadingJournal.Progress.Unit = .page
@@ -102,7 +103,7 @@ private struct ReadingEntrySheet: View {
                             .padding(12).background(Color.velvet, in: RoundedRectangle(cornerRadius: TextualLayout.cardRadius))
                             .accessibilityLabel(action == .quote ? "Quote" : "Note")
                             .accessibilityIdentifier("reading.\(action.rawValue).input")
-                        Text("\(text.count) / 4,000 · Only you")
+                        Text("\(text.count) / 4,000 · \(audience)")
                             .textStyle(.bodySmall).foregroundStyle(Color.ghost)
                         if action == .quote {
                             TextField("Page number (optional)", text: $pageText)
@@ -134,6 +135,11 @@ private struct ReadingEntrySheet: View {
             }
         }
     }
+    /// Only a newly saved quote can be shared, and only while sharing is on.
+    private var audience: String {
+        action == .quote && editingEntry == nil && social?.settings.stamp != nil ? "Shared with friends" : "Only you"
+    }
+
     private func save() {
         do {
             if action == .progress, let value = Int(text) {
@@ -261,22 +267,14 @@ struct BookReadingSection: View {
 }
 
 /// Shared by book detail's Saved quotes and My quotes: tap to edit, hold for edit/delete.
+/// Community shows a friend's quote with the same card, read-only.
 struct ReadingQuoteCard: View {
     let entry: ReadingJournal.Entry
     let edit: () -> Void
     let delete: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(entry.text).textStyle(.bodyMedium)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            if let page = entry.page {
-                Text("p. \(page)").textStyle(.bodySmall).foregroundStyle(Color.ghost)
-            }
-        }
-        .padding(14)
-        .background(Color.velvet, in: RoundedRectangle(cornerRadius: TextualLayout.cardRadius))
-        .contentShape(RoundedRectangle(cornerRadius: TextualLayout.cardRadius))
+        ReadingQuoteText(text: entry.text, page: entry.page)
         .onTapGesture(perform: edit)
         .textualContextMenu {
             Button(action: edit) { Label("Edit", textualIcon: .edit) }
@@ -285,6 +283,24 @@ struct ReadingQuoteCard: View {
         .accessibilityAddTraits(.isButton)
         .accessibilityAction(named: "Edit", edit)
         .accessibilityAction(named: "Delete", delete)
+    }
+}
+
+struct ReadingQuoteText: View {
+    let text: String
+    let page: Int?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(text).textStyle(.bodyMedium)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if let page {
+                Text("p. \(page)").textStyle(.bodySmall).foregroundStyle(Color.ghost)
+            }
+        }
+        .padding(14)
+        .background(Color.velvet, in: RoundedRectangle(cornerRadius: TextualLayout.cardRadius))
+        .contentShape(RoundedRectangle(cornerRadius: TextualLayout.cardRadius))
     }
 }
 

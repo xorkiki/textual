@@ -9,7 +9,9 @@ struct ReaderProfileView: View {
     @Query private var drafts: [ReaderProfileDraft]
     @Environment(\.modelContext) private var context
     @Environment(\.readingLibrary) private var readingLibrary
+    @Environment(\.socialStore) private var social
     @State private var publicationTask: Task<Void, Never>?
+    @State private var showPrivacy = false
     @Environment(\.scenePhase) private var scenePhase
     @State private var store: ReaderProfileStore?
     @State private var showPicker = false
@@ -31,6 +33,8 @@ struct ReaderProfileView: View {
             favorite.refreshed(from: byID[favorite.id].map { [$0] } ?? books)
         }
         result.avatarPath = draft?.content?.avatarPath
+        // Only a database with the social migration accepts the breakdown.
+        if social?.settings.isLoaded != true { result.genreBreakdown = nil }
         return result
     }
     private var avatarTransport: (any ReaderAvatarTransport)? {
@@ -45,6 +49,17 @@ struct ReaderProfileView: View {
                                       username: account.profile?.username ?? "reader", content: content,
                                       avatarData: draft?.matchingAvatarData, avatarTransport: avatarTransport,
                                       choosePhoto: { showPhotoPicker = true }, isPreparingPhoto: isPreparingPhoto)
+                    if hiddenFromVisitors == Set(ReaderCardStat.allCases) {
+                        HStack(spacing: TextualLayout.itemGap) {
+                            Text("Visitors see your card without reading stats.")
+                                .textStyle(.bodySmall).foregroundStyle(Color.ghost)
+                            Spacer(minLength: 0)
+                            Button("Choose") { showPrivacy = true }
+                                .buttonStyle(TextualHeaderActionStyle())
+                                .accessibilityLabel("Choose what visitors see")
+                                .accessibilityIdentifier("profile.choosePrivacy")
+                        }
+                    }
                     ReaderBookshelf(readerName: account.profile?.firstName ?? "reader", favorites: content.favorites, isOwner: true,
                         add: { showPicker = true },
                         move: { id, target in saveFavorites(ReaderShelf.moving(id, to: target, in: content.favorites)) },
@@ -89,15 +104,18 @@ struct ReaderProfileView: View {
                 NavigationStack {
                     PublicReaderProfilePage(firstName: account.profile?.firstName ?? "reader",
                                             username: account.profile?.username ?? "reader", content: content,
-                                            avatarData: draft?.matchingAvatarData, avatarTransport: avatarTransport)
+                                            avatarData: draft?.matchingAvatarData, avatarTransport: avatarTransport,
+                                            hiddenStats: hiddenFromVisitors)
                         .textualSheetHeader("Public view") { showPreview = false }
                 }
                 .preferredColorScheme(.dark)
             }
             .sheet(isPresented: $showReaders) {
-                if let client = account.client {
-                    ReaderProfileLookup(transport: SupabaseReaderProfileTransport(client: client), initialUsername: incomingUsername ?? "")
-                }
+                ReaderProfileLookup(initialUsername: incomingUsername ?? "")
+                    .environment(\.socialStore, social)
+            }
+            .sheet(isPresented: $showPrivacy) {
+                SocialPrivacySettingsView().environment(\.socialStore, social)
             }
             .alert("Couldn’t add photo", isPresented: Binding(get: { photoError != nil }, set: { if !$0 { photoError = nil } })) {
                 Button("OK") { photoError = nil }
@@ -129,6 +147,16 @@ struct ReaderProfileView: View {
         }
     }
 
+    /// What the owner's privacy settings keep off the public card (the preview shows it too).
+    private var hiddenFromVisitors: Set<ReaderCardStat> {
+        guard let settings = social?.settings.settings else { return [] }
+        var hidden = Set<ReaderCardStat>()
+        if !settings.booksReadVisible { hidden.insert(.reads) }
+        if !settings.genresVisible { hidden.insert(.genres) }
+        if !settings.rereadsVisible { hidden.insert(.rereads) }
+        return hidden
+    }
+
     private var header: some View {
         TextualHeader(title: "PROFILE") {
             Button { showPreview = true } label: { DesignSystemIconView(.preview) }
@@ -138,8 +166,8 @@ struct ReaderProfileView: View {
         }
     }
 
-    private func saveContent(_ content: ReaderPublicContent) {
-        do { try store?.update(content) }
+    private func saveContent(_ content: ReaderPublicContent, addedFavorites: [UUID] = []) {
+        do { try store?.update(content, addedFavorites: addedFavorites, stamp: social?.settings.stamp) }
         catch { saveError = "Your shelf couldn’t be saved. Please try again."; context.rollback() }
     }
 
@@ -167,7 +195,9 @@ struct ReaderProfileView: View {
     private func saveFavorites(_ favorites: [ReaderFavorite]) {
         var updated = content
         updated.favorites = Array(favorites.prefix(ReaderShelf.limit))
-        saveContent(updated)
+        // Only books newly placed on the shelf can become activity; reorders never do.
+        let previous = Set(content.favorites.map(\.id))
+        saveContent(updated, addedFavorites: updated.favorites.map(\.id).filter { !previous.contains($0) })
         synchronize()
     }
 
@@ -255,19 +285,23 @@ private struct ReaderFavoritePicker: View {
     }
 }
 
+/// The public profile layout: the owner's eye-icon preview and every visitor route.
 struct PublicReaderProfilePage: View {
     let firstName: String
     let username: String
     let content: ReaderPublicContent
     var avatarData: Data? = nil
     var avatarTransport: (any ReaderAvatarTransport)? = nil
+    var hiddenStats: Set<ReaderCardStat> = []
+    var selectStat: ((ReaderCardStat) -> Void)? = nil
     @State private var selectedBook: Book?
 
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 30) {
                 ReaderLibraryCard(firstName: firstName, username: username, content: content,
-                                  avatarData: avatarData, avatarTransport: avatarTransport)
+                                  avatarData: avatarData, avatarTransport: avatarTransport,
+                                  hiddenStats: hiddenStats, selectStat: selectStat)
                 ReaderBookshelf(readerName: firstName, favorites: content.favorites, open: { selectedBook = $0.detailBook() })
             }
             .padding(TextualLayout.pageInset).frame(maxWidth: 650).frame(maxWidth: .infinity)
@@ -277,64 +311,42 @@ struct PublicReaderProfilePage: View {
     }
 }
 
+/// Reader links (textual://reader/<username>) open the same visitor route as Community.
 private struct ReaderProfileLookup: View {
-    let transport: any ReaderProfileTransport
     let initialUsername: String
     @Environment(\.dismiss) private var dismiss
     @State private var username = ""
-    @State private var profile: PublicReaderProfile?
+    @State private var route: ReaderRoute?
     @State private var message: String?
-    @State private var isLoading = false
 
     var body: some View {
         NavigationStack {
-            Group {
-                if let profile {
-                    PublicReaderProfilePage(firstName: profile.firstName, username: profile.username, content: profile.content,
-                                            avatarTransport: transport)
-                } else {
-                    VStack(spacing: 16) {
-                        Text("a familiar face in the stacks")
-                            .font(.designSystem(.heading3))
-                        TextField("username", text: $username)
-                            .textInputAutocapitalization(.never).autocorrectionDisabled()
-                            .padding(16).background(Color.velvet, in: Capsule())
-                            .submitLabel(.search).onSubmit { lookup() }
-                        Button("Find reader") { lookup() }.disabled(isLoading || username.isEmpty)
-                        if isLoading { ProgressView() }
-                        if let message { Text(message).font(.designSystem(.caption)).foregroundStyle(Color.ghost) }
-                    }.padding(TextualLayout.pageInset).frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
+            VStack(spacing: 16) {
+                Text("a familiar face in the stacks")
+                    .font(.designSystem(.heading3))
+                TextField("username", text: $username)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .padding(16).background(Color.velvet, in: Capsule())
+                    .submitLabel(.search).onSubmit { lookup() }
+                Button("Find reader") { lookup() }.disabled(username.isEmpty)
+                if let message { Text(message).font(.designSystem(.caption)).foregroundStyle(Color.ghost) }
             }
+            .padding(TextualLayout.pageInset).frame(maxWidth: .infinity, maxHeight: .infinity)
             .foregroundStyle(Color.paper).background(Color.inkwell.ignoresSafeArea())
             .textualPageHeader {
-                TextualHeader(title: profile.map { "@\($0.username)" } ?? "Find a reader") {
-                    HStack(spacing: TextualLayout.groupGap) {
-                        if profile != nil {
-                            IconButton(icon: .search) { profile = nil }
-                                .accessibilityLabel("Find another reader")
-                        }
-                        TextualCloseButton { dismiss() }
-                    }
-                }
+                TextualHeader(title: "Find a reader") { TextualCloseButton { dismiss() } }
             }
+            .navigationDestination(item: $route) { PublicReaderProfileView(username: $0.username) }
             .onAppear { username = initialUsername; if !username.isEmpty { lookup() } }
         }
         .preferredColorScheme(.dark).tint(.paper)
     }
 
     private func lookup() {
-        guard !isLoading else { return }
         let name = username.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "@", with: "").lowercased()
         guard ReaderProfileRoute.isValidUsername(name) else { message = "Try a username with 3–30 letters, numbers, or underscores."; return }
-        isLoading = true; message = nil
-        Task {
-            defer { isLoading = false }
-            do {
-                profile = try await transport.fetch(username: name)
-                if profile == nil { message = "no card filed under that name. yet." }
-            } catch { message = "The library doors are sticking. Try again in a moment." }
-        }
+        message = nil
+        route = ReaderRoute(username: name)
     }
 }
 

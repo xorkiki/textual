@@ -51,6 +51,9 @@ final class Book {
     var pendingOperationID: UUID? = nil
     var pendingOperationData: Data? = nil
     var syncConflictData: Data? = nil
+    /// Explicit reader actions (start, finish, quote) waiting to ride the next outbox
+    /// payload. The server publishes only the ones it can verify and that were shared.
+    var pendingActivityData: Data? = nil
     // PersistentModel reserves isDeleted for physical deletion from a context.
     // A synced removal must remain stored so its tombstone can reach other devices.
     var isRemovedFromLibrary: Bool = false

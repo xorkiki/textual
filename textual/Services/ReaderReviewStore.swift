@@ -51,6 +51,10 @@ final class ReaderReviewStore {
     private let repository: LibraryRepository?
     private var isFlushing = false
     private var active = true
+    /// Supplied by the account's social settings; nil whenever sharing is off or uncertain.
+    var activityStamp: (@MainActor () -> SocialActivityStamp?)?
+    /// New reviews start shared with friends only while activity sharing is known to be on.
+    var sharesNewReviews: Bool { activityStamp?() != nil }
 
     init(userID: UUID, context: ModelContext, transport: any ReaderReviewTransport,
          repository: LibraryRepository? = nil) {
@@ -144,9 +148,14 @@ final class ReaderReviewStore {
         guard let id = book.canonicalBookID else { throw ReaderReviewError.bookNotSynced }
         guard let content = draft.content else { throw ReaderReviewError.invalidContent }
         // Withdrawal removes text/tags from the active review, not from private imports.
-        let mutation = ReaderReviewMutation(expectedUserID: userID, operationID: UUID(), bookID: id,
+        var mutation = ReaderReviewMutation(expectedUserID: userID, operationID: UUID(), bookID: id,
             expectedRevision: draft.remote?.revision ?? 0,
             content: deleted ? ReaderReviewContent() : try content.validated(), deleted: deleted)
+        // Activity only when the review newly becomes shared; edits never post again.
+        let wasShared = draft.remote.map { !$0.deleted && $0.content.visibility == .public } ?? false
+        if !deleted, content.visibility == .public, !wasShared, let stamp = activityStamp?() {
+            mutation.activity = [stamp.intent(.review)]
+        }
         draft.pendingData = try JSONEncoder().encode(mutation)
         do {
             if !deleted, content.hasAssessment, book.importedReading?.status != "read" {

@@ -1,5 +1,19 @@
 import SwiftUI
 
+/// Library-card statistics a visitor can open (or the owner can hide).
+enum ReaderCardStat: String, Identifiable, CaseIterable {
+    case reads, genres, rereads
+    var id: String { rawValue }
+    var label: String { rawValue.uppercased() }
+    var title: String {
+        switch self {
+        case .reads: return "Books read"
+        case .genres: return "Genres"
+        case .rereads: return "Rereads"
+        }
+    }
+}
+
 struct ReaderLibraryCard: View {
     let firstName: String
     let username: String
@@ -8,6 +22,10 @@ struct ReaderLibraryCard: View {
     var avatarTransport: (any ReaderAvatarTransport)? = nil
     var choosePhoto: (() -> Void)? = nil
     var isPreparingPhoto = false
+    /// Statistics the owner keeps off their public card; shown as a quiet dash.
+    var hiddenStats: Set<ReaderCardStat> = []
+    /// Visitors tap a visible statistic to open its existing Stats-style popup.
+    var selectStat: ((ReaderCardStat) -> Void)? = nil
 
     var body: some View {
         GeometryReader { geometry in
@@ -32,9 +50,9 @@ struct ReaderLibraryCard: View {
                             .lineLimit(1).minimumScaleFactor(0.45)
                             .frame(maxWidth: .infinity, alignment: .leading)
                         HStack(spacing: 12 * scale) {
-                            stat(content.stats.reads, "READS", scale: scale)
-                            stat(content.stats.genres, "GENRES", scale: scale)
-                            stat(content.stats.rereads, "REREADS", scale: scale)
+                            stat(content.stats.reads, .reads, scale: scale)
+                            stat(content.stats.genres, .genres, scale: scale)
+                            stat(content.stats.rereads, .rereads, scale: scale)
                         }
                     }
                     .frame(height: 92 * scale, alignment: .center)
@@ -56,17 +74,32 @@ struct ReaderLibraryCard: View {
         .accessibilityIdentifier("profile.libraryCard")
     }
 
-    private func stat(_ count: Int, _ label: String, scale: CGFloat) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text(count.formatted()).font(ReaderCardTypography.count.font(scale: scale))
+    @ViewBuilder
+    private func stat(_ count: Int, _ kind: ReaderCardStat, scale: CGFloat) -> some View {
+        let hidden = hiddenStats.contains(kind)
+        let value = VStack(alignment: .leading, spacing: 0) {
+            Text(hidden ? "–" : count.formatted()).font(ReaderCardTypography.count.font(scale: scale))
                 .lineLimit(1).minimumScaleFactor(0.6)
-            Text(label).font(ReaderCardTypography.label.font(scale: scale))
+            Text(kind.label).font(ReaderCardTypography.label.font(scale: scale))
                 .tracking(0.5 * scale)
                 .foregroundStyle(Color.paper.opacity(0.75))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-
-        .accessibilityElement(children: .combine)
+        .contentShape(Rectangle())
+        if let selectStat, !hidden {
+            Button { selectStat(kind) } label: { value }
+                .buttonStyle(.plain)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("\(count.formatted()) \(kind.title.lowercased())")
+                .accessibilityHint("Shows the \(kind.title.lowercased())")
+                .accessibilityAddTraits(.isButton)
+                .accessibilityIdentifier("profile.stat.\(kind.rawValue)")
+        } else {
+            value
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(hidden ? "\(kind.title), hidden" : "\(count.formatted()) \(kind.title.lowercased())")
+                .accessibilityIdentifier("profile.stat.\(kind.rawValue)")
+        }
     }
 
 }

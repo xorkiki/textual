@@ -30,7 +30,7 @@ Every book displays its last activity timestamp, keeping you aware of your readi
 
 ### 3. Privacy & Social
 - **Authentication**: All content is gated behind Email or Apple Sign-In
-- **Follow System**: Users must follow others to see their activity feed
+- **Friends**: Mutual friendships (request and accept) are required to see someone's activity feed
 - **Activity Feed**: Track when users start books, finish books, and add books to public shelves
 
 ### 4. Book Detail & Notes
@@ -116,7 +116,7 @@ All models include Codable conformance for seamless Supabase synchronization.
 - Unified title/author catalog search, paginated results, book details, and cached covers.
 - Discover (The Archive tab): For You, Trending, Explore, and Friends as cover-only masonry grids. Tap opens details; hold and slide saves or updates a book. See [Discover](#discover).
 
-StoryGraph CSV imports preserve and sync private reading statuses, dates, ratings, reviews, and export metadata. Editing those fields, custom shelves, follows/activity feeds, Apple Sign-In, and the Reader remain planned. Imported tags are preserved as metadata; custom shelf membership is not yet synced.
+StoryGraph CSV imports preserve and sync private reading statuses, dates, ratings, reviews, and export metadata. Custom shelves, Apple Sign-In, and the Reader remain planned; friendships and the Community feed are described under [Community and friends](#community-and-friends). Imported tags are preserved as metadata; custom shelf membership is not yet synced.
 
 ## Navigation and next pages
 
@@ -130,7 +130,8 @@ Page direction saved from Kiki’s October 8, 2026 request (future work):
 |---|---|
 | Home | Profile, current read, and an up-next pile |
 | My Archive | Saved books and custom categories |
-| The Archive | Discover: suggested reads now; what friends are reading once follows exist |
+| The Archive | Discover: suggested reads, plus what friends are reading on the Friends tab |
+| Community | Friends (search, requests, friends) and Feed (friends' reading activity) |
 | Stats | Personal reading statistics |
 | Menu | Miscellaneous things people can access |
 
@@ -363,7 +364,8 @@ existing archive repository and sync, so a discovered book never becomes a secon
   per-source scores.
 - **Explore** interleaves 26 subject, era, and literary-origin pools plus new releases in a
   per-session seeded order.
-- **Friends** is an honest empty state until a follow system exists.
+- **Friends** shows covers from accepted friends' curated shelves and shared reading activity, in the
+  same grid; with no friends it says so and links to Community. See [Community and friends](#community-and-friends).
 
 Collections are refreshed by the `discovery-refresh` Edge Function on a `pg_cron` schedule and
 cached in the account's SwiftData store. Discover opens instantly from cache, works offline,
@@ -402,3 +404,75 @@ node supabase/tests/discovery-logic.test.mjs
 ```bash
 PGLITE_MODULE=/path/to/node_modules/@electric-sql/pglite/dist/index.js TEXTUAL_ROOT="$PWD" node supabase/tests/discovery.test.mjs
 ```
+
+
+## Community and friends
+
+Community (the people icon) has two tabs, styled like The Archive's tabs:
+
+- **Friends**: search readers by name or username, accept or decline requests, cancel requests
+  you sent, and open a friend's public profile. Friendships are mutual: a request must be
+  accepted. A change shows "Sending…" until the server confirms it; nothing appears as a friend
+  early.
+- **Feed**: friends' reading updates, newest first. It covers starting and finishing books
+  (rereads stay separate), saved quotes, shared reviews, and books added to a public shelf. A
+  finish, its review, and quotes from the same sitting appear as one card. The feed is view-only:
+  no likes, comments, reposts, or posting.
+
+Opening a reader shows the existing public profile page (library card and shelf). On a visitor's
+card, **Reads** opens a cover grid of the books they've read, **Rereads** shows their rereads,
+and **Genres** shows the Stats genre chart. Lists load 30 books at a time. Covers open the
+normal book details; saving or reviewing from there changes your archive only.
+
+**Privacy & sharing** (Menu, or the hint on your Profile) controls:
+
+- **Share my reading activity with friends**. It's on by default for new activity only. Turning
+  it off hides what you've already shared. Anything you do while it's off stays private, even if
+  you turn sharing back on later. Notes, progress, private reviews, and imported history are
+  never shared.
+- **Books read, Genres, Rereads** on your library card. A hidden statistic returns no count and
+  no list from any endpoint. Hiding Rereads also makes your visible Books read number count
+  distinct books. Accounts that existed before this release start with all three hidden (their
+  read lists were never public). New profiles start with them visible.
+
+Your shelf always shows the books you chose for it. Reviews have a **Share with friends** switch.
+New reviews start shared while activity sharing is on. Existing reviews stay private.
+
+Friend content stays in memory only. It's cleared on sign-out or account switch and refreshed
+whenever the app opens or returns to the foreground. If friend content can't be refreshed for an
+hour, it's removed from the screen. Content already shown on an offline phone can't be erased
+remotely until the app refreshes.
+
+### Apply the social backend
+
+1. In the SQL Editor, apply `supabase/migrations/011_social_graph.sql`, then
+   `012_social_activity.sql`. Each runs in one transaction, is additive, and refuses to run
+   twice. Current app versions keep working throughout. Both are applied to the existing
+   project as of October 13, 2026; don't rerun them there.
+2. Then ship this app version. It only sends activity after the database reports
+   `activityEnabled` (migration 012), so it also keeps syncing against an unmigrated database.
+3. Verify with a second account: send and accept a request, save a quote, and check the
+   friend's Feed and Discover → Friends.
+
+Recovery: revoke `execute` on the social read functions to disable social reads without
+touching library data. Roll forward with a new migration; don't edit applied ones. Architecture,
+permission matrix, and activity rules: [docs/social-architecture.md](docs/social-architecture.md).
+
+### Social tests
+
+The database suite runs in a throwaway local PostgreSQL cluster (`initdb` in a temp directory).
+It never connects to Supabase.
+
+```bash
+PG_MODULE=/path/to/node_modules/pg/lib/index.js TEXTUAL_ROOT="$PWD" node supabase/tests/social.test.mjs
+```
+
+The synthetic load benchmark uses the same disposable setup (`small` or `large`):
+
+```bash
+PG_MODULE=/path/to/node_modules/pg/lib/index.js TEXTUAL_ROOT="$PWD" node supabase/tests/social-performance.mjs large
+```
+
+`textualTests/SocialTests.swift` covers grouping, intents, sharing stamps, cache isolation, and
+the wire contract shared with the database suite (`supabase/tests/fixtures/`).
+`textualUITests/CommunityUITests.swift` drives a DEBUG harness (`--community-ui-test`).

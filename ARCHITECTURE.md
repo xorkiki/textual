@@ -30,7 +30,7 @@ After an account identity changes, profile state is cleared and a filtered own-r
 
 Every profile response checks both its request generation and active account. Profile writes also include an expected-user assertion checked against `auth.uid()` by the RPC. Refresh events reuse the loaded profile without extra requests or loading flicker. Profiles are currently memory-only, so a cold start needs a successful lookup before the library opens.
 
-`AccountView` handles the staged signup/sign-in forms, validation, code entry, recovery, profile completion, retry, and account details. A signed-out user can enter an existing confirmation code from the sign-in email screen or an existing recovery code from the forgot-password screen. Opening either route or navigating Back does not send email; resend is explicit. Back retains the email draft and clears the code. Codes remain in transient view state. `ContentView` opens the signed-in tabs only when restoration/profile work is complete, a profile exists, and password recovery is finished. Apple Sign-In and public/social profiles remain planned.
+`AccountView` handles the staged signup/sign-in forms, validation, code entry, recovery, profile completion, retry, and account details. A signed-out user can enter an existing confirmation code from the sign-in email screen or an existing recovery code from the forgot-password screen. Opening either route or navigating Back does not send email; resend is explicit. Back retains the email draft and clears the code. Codes remain in transient view state. `ContentView` opens the signed-in tabs only when restoration/profile work is complete, a profile exists, and password recovery is finished. Apple Sign-In remains planned. Friendships, Community, and visitor profiles are described in [docs/social-architecture.md](docs/social-architecture.md).
 
 ## Account-local storage
 
@@ -81,6 +81,7 @@ Sync runs on library opening, supported mutations, foregrounding, network recove
 | `textual_upsert_profile` | Atomic profile save/username claim with authenticated ownership assertion. |
 | `textual_sync_library` | Account-bound batch writes, idempotency, conflict results, and revision-based pulls. |
 | `textual_discovery_*` | Shared Discover collections from public providers only; read through `textual_read_discovery`, written only by the service-role `discovery-refresh` function. See `docs/discovery.md`. |
+| `textual_friendships`, `textual_activity` | One row per reader pair; one reference row per verified, shared action. RLS on, no client grants; read through narrow social RPCs (`textual_read_feed`, `textual_read_public_profile`, …). See `docs/social-architecture.md`. |
 
 RLS limits private row reads to their owner. Validating security-definer RPCs are the authenticated write interface. The current library protocol does not include ratings, reading status, notes, tags, or social activity.
 
@@ -107,6 +108,7 @@ The prepared catalog cache/Edge Function is not deployed or wired into the iPhon
 | Sync repository/transport/DTOs | `Services/LibraryRepository.swift` |
 | Library/search/details | `Views/LibraryView.swift`, `Views/AddBookView.swift`, `Views/BookDetailView.swift` |
 | Discover (The Archive tab) | `Views/DiscoverView.swift`, `Views/MasonryGrid.swift`, `Services/Discovery*.swift`; backend in `supabase/functions/discovery-refresh` and `supabase/migrations/009_discovery.sql` |
+| Community, friends, visitor profiles | `Views/CommunityView.swift`, `Views/PublicReaderProfileView.swift`, `Views/SocialPrivacySettingsView.swift`, `Services/Social*.swift`; backend in `supabase/migrations/011_social_graph.sql` and `012_social_activity.sql` |
 | Catalog view models | `ViewModels/AddBookViewModel.swift`, `ViewModels/BookDetailViewModel.swift` |
 | Catalog service | `Services/BookCatalogService.swift` |
 | Local models | `BookModel.swift`, `TagModel.swift`, `LibrarySyncState.swift` |

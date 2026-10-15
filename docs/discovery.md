@@ -154,9 +154,14 @@ exploratory picks.
 
 ## Friends
 
-There's no follow system yet, so Friends shows an empty state and no invented activity.
-When following exists, this tab should read friends' public shelves and reading activity
-through a privacy-checked RPC and render the same `MasonryGrid`. The Community feed stays separate.
+Friends reads `textual_read_friend_discovery` (migration 012) and renders the same
+`DiscoverFeedPage`, `MasonryGrid`, `DiscoverCoverCell`, and hold-and-slide actions as the other
+tabs: covers only, no titles, badges, or counts. Candidates come only from accepted friends:
+curated public shelves, and (while a friend shares activity) current and finished reads and
+shared reviews rated 4★ or higher. Hidden or private sources are never selected, so they never
+rank. Pages are scored at a session snapshot and re-authorized on every request; results stay
+in memory only. With no friends the tab offers a route to Community; it never invents books.
+Ranking, provenance, and permissions: [social architecture](social-architecture.md).
 
 ## Future extension points
 

@@ -1,0 +1,377 @@
+{
+  "comment": "Wire contract between the iOS client and the social RPCs. 'client' is exactly what the app encodes (checked by textualTests/SocialTests.swift) and is sent through the real RPCs by supabase/tests/social.test.mjs. 'server' holds real RPC responses captured from the same suite (regenerate with WRITE_CONTRACT=1); the database suite checks their shape on every run and the Swift suite decodes them.",
+  "client": {
+    "library_change": {
+      "operation_id": "6B2D7C41-0E4F-4B8A-9C3D-1A2B3C4D5E6F",
+      "entry_id": "7C3E8D52-1F50-4C9B-8D4E-2B3C4D5E6F70",
+      "expected_revision": 0,
+      "deleted": false,
+      "book": {
+        "provider": "openlibrary",
+        "provider_id": "OL9001W",
+        "title": "Contract",
+        "author": "Writer"
+      },
+      "reading_data": {
+        "version": 1,
+        "sourceKey": "1111111111111111111111111111111111111111111111111111111111111111",
+        "status": "currently-reading",
+        "periods": [],
+        "format": "",
+        "moods": [],
+        "pace": "",
+        "tags": [],
+        "originalFields": {},
+        "journal": {
+          "quotes": [
+            {
+              "id": "8D4F9E63-2061-4DAC-9E5F-3C4D5E6F7081",
+              "text": "A line worth keeping.",
+              "createdAt": 0,
+              "page": 12
+            }
+          ],
+          "notes": []
+        }
+      },
+      "activity": [
+        {
+          "id": "9E50AF74-3172-4EBD-AF60-4D5E6F708192",
+          "kind": "started",
+          "shared": true,
+          "sharing_version": 1,
+          "occurred_at": "2026-10-13T12:00:00.000Z"
+        },
+        {
+          "id": "AF61B085-4283-4FCE-B071-5E6F708192A3",
+          "kind": "quote",
+          "shared": true,
+          "sharing_version": 1,
+          "occurred_at": "2026-10-13T12:00:00.000Z",
+          "quote_id": "8D4F9E63-2061-4DAC-9E5F-3C4D5E6F7081"
+        }
+      ]
+    },
+    "shelf_intent": {
+      "id": "B072C196-5394-40DF-8182-6F708192A3B4",
+      "kind": "shelf",
+      "shared": true,
+      "sharing_version": 1,
+      "occurred_at": "2026-10-13T12:00:00.000Z",
+      "favorite_id": "C183D2A7-64A5-41E0-9293-708192A3B4C5"
+    },
+    "settings_change": {
+      "activitySharing": false
+    }
+  },
+  "server": {
+    "friendship_result": {
+      "outcome": "requested",
+      "relationship": {
+        "state": "outgoing",
+        "version": 1,
+        "request_id": "902c1800-af41-41cf-91df-13d298c00f88",
+        "accepted_at": null,
+        "requested_at": "2026-10-13T02:53:51.521521-04:00"
+      }
+    },
+    "friends_page": {
+      "next": null,
+      "friends": [
+        {
+          "user_id": "00000000-0000-0000-0000-000000000002",
+          "username": "bea",
+          "first_name": "Bea",
+          "avatar_path": null,
+          "relationship": {
+            "state": "friends",
+            "request_id": "df598b2c-bfc7-4789-adff-83a37103b094",
+            "accepted_at": "2026-10-13T02:53:51.840126-04:00"
+          }
+        },
+        {
+          "user_id": "00000000-0000-0000-0000-000000000004",
+          "username": "dot_com",
+          "first_name": "Dorothy",
+          "avatar_path": null,
+          "relationship": {
+            "state": "friends",
+            "request_id": "3f25be30-8749-4e38-afe1-493c853807d7",
+            "accepted_at": "2026-10-13T02:53:51.840931-04:00"
+          }
+        }
+      ],
+      "incoming": [],
+      "outgoing": []
+    },
+    "settings": {
+      "genresVisible": true,
+      "rereadsVisible": true,
+      "sharingVersion": 1,
+      "activityEnabled": true,
+      "activitySharing": true,
+      "booksReadVisible": true
+    },
+    "search_page": {
+      "next": null,
+      "results": [
+        {
+          "rank": 1,
+          "user_id": "00000000-0000-0000-0000-000000000005",
+          "username": "ada_lovelace",
+          "first_name": "Ada",
+          "avatar_path": null,
+          "relationship": {
+            "state": "none"
+          }
+        }
+      ]
+    },
+    "public_profile": {
+      "card": {
+        "genres": {
+          "count": 2,
+          "visible": true,
+          "breakdown": [
+            {
+              "name": "Fantasy",
+              "books": 40,
+              "reads": 56
+            },
+            {
+              "name": "Romance",
+              "books": 30,
+              "reads": 30
+            },
+            {
+              "name": "Unclassified",
+              "books": 7,
+              "reads": 7
+            }
+          ]
+        },
+        "rereads": {
+          "books": 8,
+          "count": 16,
+          "visible": true
+        },
+        "books_read": {
+          "books": 77,
+          "count": 93,
+          "visible": true
+        }
+      },
+      "user_id": "00000000-0000-0000-0000-000000000002",
+      "is_owner": false,
+      "sentence": "new to the library. judgment pending, fondly.",
+      "username": "bea",
+      "favorites": [
+        {
+          "id": "94b98a80-708d-44f4-b864-d9cab69d7be4",
+          "isbn": "",
+          "title": "Persuasion",
+          "author": "Writer",
+          "coverURL": "https://covers.openlibrary.org/b/id/2001-L.jpg",
+          "catalogID": "openlibrary:OL2001W"
+        }
+      ],
+      "first_name": "Bea",
+      "avatar_path": null,
+      "member_since": "2026-10-13T02:53:51.517968-04:00",
+      "relationship": {
+        "state": "none"
+      }
+    },
+    "books_page": {
+      "list": "rereads",
+      "next": {
+        "id": "8b0a7a06-a977-4a1a-8ce3-25160847712f",
+        "title": "book 10"
+      },
+      "books": [
+        {
+          "isbn": null,
+          "title": "Book 00",
+          "author": "Writer",
+          "source": "rereads",
+          "entry_id": "3e2f61b6-0bc3-4835-be78-00c793c0272f",
+          "cover_url": null,
+          "catalog_id": "openlibrary:OL1000W",
+          "sort_title": "book 00",
+          "times_read": 3
+        },
+        {
+          "isbn": null,
+          "title": "Book 10",
+          "author": "Writer",
+          "source": "rereads",
+          "entry_id": "8b0a7a06-a977-4a1a-8ce3-25160847712f",
+          "cover_url": null,
+          "catalog_id": "openlibrary:OL1010W",
+          "sort_title": "book 10",
+          "times_read": 3
+        }
+      ],
+      "total": 8
+    },
+    "feed_page": {
+      "next": {
+        "id": "95424afe-8eb6-4567-b714-3526b2b8b359",
+        "published_at": "2026-10-13T02:53:51.991002-04:00"
+      },
+      "cutoff": "2026-10-13T02:53:52.00444-04:00",
+      "events": [
+        {
+          "id": "5095119d-5c3d-4e2d-a65e-d3ec73848d17",
+          "book": {
+            "isbn": null,
+            "title": "Emma",
+            "author": "Writer",
+            "book_id": "7755a981-e1f1-426f-b572-4c1a43860d6d",
+            "cover_url": null,
+            "catalog_id": "openlibrary:OL3002W"
+          },
+          "kind": "quote",
+          "actor": {
+            "user_id": "00000000-0000-0000-0000-000000000002",
+            "username": "bea",
+            "first_name": "Bea",
+            "avatar_path": null
+          },
+          "quote": {
+            "page": 12,
+            "text": "Badly done, Emma!"
+          },
+          "review": null,
+          "source": "quote",
+          "read_key": null,
+          "occurred_at": "2026-10-13T02:53:51.994-04:00",
+          "read_number": null,
+          "published_at": "2026-10-13T02:53:51.995532-04:00"
+        },
+        {
+          "id": "95424afe-8eb6-4567-b714-3526b2b8b359",
+          "book": {
+            "isbn": null,
+            "title": "Emma",
+            "author": "Writer",
+            "book_id": "7755a981-e1f1-426f-b572-4c1a43860d6d",
+            "cover_url": null,
+            "catalog_id": "openlibrary:OL3002W"
+          },
+          "kind": "finished",
+          "actor": {
+            "user_id": "00000000-0000-0000-0000-000000000002",
+            "username": "bea",
+            "first_name": "Bea",
+            "avatar_path": null
+          },
+          "quote": null,
+          "review": null,
+          "source": "finished",
+          "read_key": "2c610d13d1ce275222f8d233342a52e3",
+          "occurred_at": "2026-10-13T02:53:51.99-04:00",
+          "read_number": 1,
+          "published_at": "2026-10-13T02:53:51.991002-04:00"
+        }
+      ]
+    },
+    "feed_page_shelf_review": {
+      "next": null,
+      "cutoff": "2026-10-13T02:53:52.022955-04:00",
+      "events": [
+        {
+          "id": "a4d6acdb-bed9-4005-862a-1439202c0e0d",
+          "book": {
+            "isbn": "",
+            "title": "Emma",
+            "author": "Writer",
+            "book_id": "7755a981-e1f1-426f-b572-4c1a43860d6d",
+            "cover_url": "https://covers.openlibrary.org/b/id/3002-L.jpg",
+            "catalog_id": "openlibrary:OL3002W"
+          },
+          "kind": "shelf",
+          "actor": {
+            "user_id": "00000000-0000-0000-0000-000000000002",
+            "username": "bea",
+            "first_name": "Bea",
+            "avatar_path": null
+          },
+          "quote": null,
+          "review": null,
+          "source": "shelf",
+          "read_key": null,
+          "occurred_at": "2026-10-13T02:53:52.021-04:00",
+          "read_number": null,
+          "published_at": "2026-10-13T02:53:52.02228-04:00"
+        },
+        {
+          "id": "a4eedcc8-d24a-4dfb-acb6-1a9cfdac574e",
+          "book": {
+            "isbn": null,
+            "title": "Emma",
+            "author": "Writer",
+            "book_id": "7755a981-e1f1-426f-b572-4c1a43860d6d",
+            "cover_url": null,
+            "catalog_id": "openlibrary:OL3002W"
+          },
+          "kind": "review",
+          "actor": {
+            "user_id": "00000000-0000-0000-0000-000000000002",
+            "username": "bea",
+            "first_name": "Bea",
+            "avatar_path": null
+          },
+          "quote": null,
+          "review": {
+            "body": "Loved it",
+            "rating": 20,
+            "spoilers": false
+          },
+          "source": "review",
+          "read_key": null,
+          "occurred_at": "2026-10-13T02:53:52.015-04:00",
+          "read_number": null,
+          "published_at": "2026-10-13T02:53:52.01594-04:00"
+        }
+      ]
+    },
+    "discovery_page": {
+      "next": {
+        "score": 2,
+        "book_id": "5992703e-30ce-44dd-8f83-097900538ec6"
+      },
+      "books": [
+        {
+          "isbn": "",
+          "score": 12.5,
+          "title": "Emma",
+          "author": "Writer",
+          "book_id": "7755a981-e1f1-426f-b572-4c1a43860d6d",
+          "sources": [
+            "finished",
+            "review",
+            "shelf",
+            "started"
+          ],
+          "cover_url": "https://covers.openlibrary.org/b/id/3002-L.jpg",
+          "catalog_id": "openlibrary:OL3002W"
+        },
+        {
+          "isbn": null,
+          "score": 2,
+          "title": "Brand new",
+          "author": "Writer",
+          "book_id": "5992703e-30ce-44dd-8f83-097900538ec6",
+          "sources": [
+            "started"
+          ],
+          "cover_url": null,
+          "catalog_id": "openlibrary:OL5100W"
+        }
+      ],
+      "snapshot": "2026-10-13T02:53:52.238955-04:00",
+      "has_friends": true
+    }
+  }
+}

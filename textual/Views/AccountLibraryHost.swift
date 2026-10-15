@@ -22,6 +22,7 @@ struct AccountLibraryHost: View {
                     .environment(\.readerReviews, store.reviews)
                     .environment(\.reviewLibraryRepository, store.repository)
                     .environment(\.discoveryRepository, store.discovery)
+                    .environment(\.socialStore, store.social)
             } else if let openError {
                 ContentUnavailableView {
                     Label("Library unavailable", textualIcon: .warning)
@@ -47,10 +48,20 @@ struct AccountLibraryHost: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { Task { await store?.repository.synchronize() } }
         }
+        .onChange(of: session.accountDeletionGeneration) { _, _ in
+            store?.repository.stop()
+            store?.reviews.stop()
+            store?.discovery.stop()
+            store?.social.stop()
+            store = nil
+            AccountLibraryStore.deleteLocalData(for: userID)
+        }
         .onDisappear {
             store?.repository.stop()
             store?.reviews.stop()
             store?.discovery.stop()
+            // Friend content is memory-only; this clears it and drops late responses.
+            store?.social.stop()
             store = nil
         }
     }
@@ -73,11 +84,24 @@ final class AccountLibraryStore {
     let repository: LibraryRepository
     let reviews: ReaderReviewStore
     let discovery: DiscoveryRepository
+    let social: SocialStore
     private(set) var legacyBookCount = 0
     @ObservationIgnored private let legacyContainer: ModelContainer
     @ObservationIgnored private let userID: UUID
     @ObservationIgnored private let importMarker: String
     @ObservationIgnored private let defaults: UserDefaults
+
+    static func deleteLocalData(for userID: UUID, projectHost: String? = nil) {
+        guard let base = try? FileManager.default.url(for: .applicationSupportDirectory,
+                                                       in: .userDomainMask,
+                                                       appropriateFor: nil,
+                                                       create: false) else { return }
+        let project = projectHost ?? Secrets.supabaseConfiguration?.url.host ?? "unconfigured"
+        let directory = base.appendingPathComponent("Accounts", isDirectory: true)
+            .appendingPathComponent(project, isDirectory: true)
+            .appendingPathComponent(userID.uuidString.lowercased(), isDirectory: true)
+        try? FileManager.default.removeItem(at: directory)
+    }
 
     init(userID: UUID, client: SupabaseClient, legacyContainer: ModelContainer,
          baseDirectory: URL? = nil, defaults: UserDefaults = .standard, projectHost: String? = nil) throws {
@@ -93,7 +117,7 @@ final class AccountLibraryStore {
             .appendingPathComponent(userID.uuidString.lowercased(), isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let schema = Schema([Book.self, Tag.self, LibrarySyncState.self, ReaderProfileDraft.self, ReaderReviewDraft.self,
-                             DiscoveryCacheEntry.self, DiscoveryCollectionState.self])
+                             DiscoveryCacheEntry.self, DiscoveryCollectionState.self, SocialSettingsState.self])
         let configuration = ModelConfiguration(schema: schema,
             url: directory.appendingPathComponent("library.store"), cloudKitDatabase: .none)
         container = try ModelContainer(for: schema, configurations: [configuration])
@@ -102,9 +126,16 @@ final class AccountLibraryStore {
             transport: SupabaseReaderReviewTransport(client: client), repository: repository)
         discovery = DiscoveryRepository(context: container.mainContext,
                                         transport: SupabaseDiscoveryTransport(client: client))
+        social = SocialStore(userID: userID, context: container.mainContext,
+                             transport: SupabaseSocialTransport(client: client),
+                             avatarTransport: SupabaseReaderProfileTransport(client: client))
         repository.afterSynchronization = { [weak reviews] in
             try? await reviews?.flush()
         }
+        // Explicit actions become activity only while sharing is known to be on.
+        let settings = social.settings
+        repository.activityStamp = { [weak settings] in settings?.stamp }
+        reviews.activityStamp = { [weak settings] in settings?.stamp }
         if defaults.string(forKey: importMarker) == nil {
             legacyBookCount = try legacyContainer.mainContext.fetchCount(FetchDescriptor<Book>(
                 predicate: #Predicate<Book> { !$0.isRemovedFromLibrary }))

@@ -345,6 +345,15 @@ struct ReaderReviewEditor: View {
             var content = model.content; content[keyPath: keyPath] = value; model.update(content)
         })
     }
+    private var audienceNote: String {
+        guard model.content.visibility == .public else {
+            return "Only you can see this review. Closing keeps your draft on this device."
+        }
+        return model.store.sharesNewReviews
+            ? "Your friends can see this review in Community. Closing keeps your draft on this device."
+            : "Shared reviews reach friends while activity sharing is on. Closing keeps your draft on this device."
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -376,7 +385,13 @@ struct ReaderReviewEditor: View {
                             .toggleStyle(TextualCheckboxToggleStyle())
                             .font(.designSystem(.bodyMedium))
                     }
-                    Text("Only you can see this review. Closing keeps your draft on this device.")
+                    Toggle("Share with friends", isOn: Binding(get: { model.content.visibility == .public }, set: { shared in
+                        var content = model.content; content.visibility = shared ? .public : .private; model.update(content)
+                    }))
+                    .toggleStyle(TextualCheckboxToggleStyle())
+                    .font(.designSystem(.bodyMedium))
+                    .accessibilityIdentifier("review.share")
+                    Text(audienceNote)
                         .textStyle(.bodySmall).foregroundStyle(Color.ghost)
                     if model.book.importedReading?.status != "read" {
                         Text("Saving your review marks this book as read.")
