@@ -56,6 +56,28 @@ struct AccountSessionTests {
         #expect(account.message?.contains("confirm") == true)
     }
 
+    @Test(arguments: ["obfuscated", "email_exists", "user_already_exists"])
+    func existingSignupEmailOffersSignInWithoutConfirmation(kind: String) async throws {
+        let (account, network, identifier) = makeAccount { request in
+            #expect(request.url?.path == "/auth/v1/signup")
+            if kind == "obfuscated" {
+                var user = try #require(JSONSerialization.jsonObject(with: authUserFixture) as? [String: Any])
+                user["identities"] = [] as [String]
+                return (200, try JSONSerialization.data(withJSONObject: user))
+            }
+            return (422, Data("{\"error_code\":\"\(kind)\",\"message\":\"private details\"}".utf8))
+        }
+        defer { finish(network, identifier) }
+        #expect(await account.signUp(email: "reader@example.com", password: "password123") == false)
+        #expect(account.signupEmailAlreadyRegistered)
+        #expect(account.errorMessage == "An account already uses this email. Sign in instead.")
+        #expect(account.message == nil)
+        #expect(!account.isSignedIn)
+        #expect(!account.isWorking)
+        account.clearMessages()
+        #expect(!account.signupEmailAlreadyRegistered)
+    }
+
     @Test
     func recoveryCallbackRequiresNewPasswordAndCompletesUpdate() async {
         let (account, network, identifier) = makeAccount { request in
@@ -126,12 +148,16 @@ struct AccountSessionTests {
     }
 
     @Test
-    func signupStoresSuggestionsWithoutReservingAProfile() async throws {
+    func signupChecksNormalizedUsernameBeforeSendingEmail() async throws {
         let requests = AccountRequestLog()
         let (account, network, identifier) = makeAccount { request in
             await requests.add(request)
             let body = try #require(request.httpBody)
             let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+            if request.url?.path == "/rest/v1/rpc/textual_username_available" {
+                #expect(json["p_username"] as? String == "kiki_reader")
+                return (200, Data("true".utf8))
+            }
             let metadata = try #require(json["data"] as? [String: String])
             #expect(metadata == ["first_name": "Kiki", "username": "kiki_reader"])
             return (200, authUserFixture)
@@ -140,7 +166,73 @@ struct AccountSessionTests {
         #expect(await account.signUp(email: "reader@example.com", password: "password123", firstName: " Kiki ", username: " KIKI_READER "))
         #expect(!account.needsProfile)
         #expect(account.profile == nil)
-        #expect(await requests.paths == ["/auth/v1/signup"])
+        #expect(await requests.paths == ["/rest/v1/rpc/textual_username_available", "/auth/v1/signup"])
+    }
+
+    @Test
+    func takenUsernameStopsSignupAndAllowsAnotherName() async throws {
+        let requests = AccountRequestLog()
+        let (account, network, identifier) = makeAccount { request in
+            await requests.add(request)
+            if request.url?.path == "/rest/v1/rpc/textual_username_available" {
+                let body = try #require(request.httpBody)
+                let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: String])
+                return (200, Data((json["p_username"] == "new_reader" ? "true" : "false").utf8))
+            }
+            #expect(request.url?.path == "/auth/v1/signup")
+            return (200, authUserFixture)
+        }
+        defer { finish(network, identifier) }
+        #expect(await account.signUp(email: "reader@example.com", password: "password123", firstName: "Kiki", username: " TAKEN_READER ") == false)
+        #expect(account.errorMessage == "That username is already taken. Choose another one.")
+        #expect(!account.isSignedIn)
+        #expect(!account.isWorking)
+        #expect(await requests.paths == ["/rest/v1/rpc/textual_username_available"])
+        #expect(await account.signUp(email: "reader@example.com", password: "password123", firstName: "Kiki", username: "new_reader"))
+        #expect(account.errorMessage == nil)
+        #expect(await requests.paths == ["/rest/v1/rpc/textual_username_available", "/rest/v1/rpc/textual_username_available", "/auth/v1/signup"])
+    }
+
+    @Test(arguments: [false, true])
+    func failedUsernameCheckNeverCreatesAnAccount(networkFailure: Bool) async {
+        let requests = AccountRequestLog()
+        let (account, network, identifier) = makeAccount { request in
+            await requests.add(request)
+            #expect(request.url?.path == "/rest/v1/rpc/textual_username_available")
+            if networkFailure { throw URLError(.notConnectedToInternet) }
+            return (403, Data("{\"code\":\"42501\",\"message\":\"private database details\"}".utf8))
+        }
+        defer { finish(network, identifier) }
+        #expect(await account.signUp(email: "reader@example.com", password: "password123", firstName: "Kiki", username: "kiki_reader") == false)
+        #expect(account.errorMessage == "Couldn’t check that username. Please try again.")
+        #expect(!account.isWorking)
+        #expect(!account.isSignedIn)
+        #expect(await requests.paths.allSatisfy { $0 == "/rest/v1/rpc/textual_username_available" })
+    }
+
+    @Test
+    func repeatedSubmitWhileCheckingUsernameDoesNotDuplicateSignup() async throws {
+        let gate = AccountResponseGate()
+        let requests = AccountRequestLog()
+        let (account, network, identifier) = makeAccount { request in
+            await requests.add(request)
+            if request.url?.path == "/rest/v1/rpc/textual_username_available" {
+                await gate.wait()
+                return (200, Data("true".utf8))
+            }
+            return (200, authUserFixture)
+        }
+        defer { finish(network, identifier) }
+        let first = Task { await account.signUp(email: "reader@example.com", password: "password123", firstName: "Kiki", username: "kiki_reader") }
+        for _ in 0..<100 {
+            if await gate.isWaiting { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(account.isWorking)
+        #expect(await account.signUp(email: "reader@example.com", password: "password123", firstName: "Kiki", username: "kiki_reader") == false)
+        await gate.release()
+        #expect(await first.value)
+        #expect(await requests.paths == ["/rest/v1/rpc/textual_username_available", "/auth/v1/signup"])
     }
 
     @Test
@@ -165,23 +257,84 @@ struct AccountSessionTests {
         #expect(await requests.paths.count == 1)
     }
 
-    @Test
-    func missingProfileUsesSuggestionsAndRequiresExplicitCompletion() async throws {
+    @Test(arguments: [false, true])
+    func confirmedSignupFinishesProfileWithoutRepeatingQuestions(restore: Bool) async throws {
         let requests = AccountRequestLog()
         let (account, network, identifier) = makeAccount(profileHandler: { request in
             await requests.add(request)
             return (200, Data("[]".utf8))
         }) { request in
             await requests.add(request)
-            return (200, makeAuthSession(metadata: ["first_name": "Kiki", "username": "desired_handle"]))
+            if request.url?.path == "/rest/v1/rpc/textual_upsert_profile" {
+                let body = try #require(request.httpBody)
+                let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: String])
+                #expect(json["p_first_name"] == "Kiki")
+                #expect(json["p_username"] == "kiki_reader")
+                #expect(json["p_expected_user_id"]?.lowercased() == fixtureUserID.uuidString.lowercased())
+                return (200, profileFixture)
+            }
+            return (200, makeAuthSession(metadata: ["first_name": "Kiki", "username": "kiki_reader"]))
         }
         defer { finish(network, identifier) }
-        #expect(await account.signIn(email: "reader@example.com", password: "password123"))
+        if restore {
+            #expect(await account.signIn(email: "reader@example.com", password: "password123"))
+        } else {
+            #expect(await account.verifyEmailCode(email: "reader@example.com", code: "12345678", purpose: .signup))
+        }
+        try await waitForProfile(account)
+        #expect(account.profile?.username == "kiki_reader")
+        #expect(!account.needsProfile)
+        #expect(!account.needsUsernameChoice)
+        #expect(await requests.paths.filter { $0.contains("/rpc/") } == ["/rest/v1/rpc/textual_upsert_profile"])
+    }
+
+    @Test
+    func nameClaimedDuringEmailConfirmationOnlyRequiresAnotherUsername() async throws {
+        let (account, network, identifier) = makeAccount(profileHandler: { _ in (200, Data("[]".utf8)) }) { request in
+            if request.url?.path == "/auth/v1/verify" {
+                return (200, makeAuthSession(metadata: ["first_name": "Kiki", "username": "taken_reader"]))
+            }
+            let body = try #require(request.httpBody)
+            let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: String])
+            if json["p_username"] == "taken_reader" {
+                return (409, Data("{\"code\":\"23505\",\"message\":\"Username is unavailable.\"}".utf8))
+            }
+            #expect(json["p_first_name"] == "Kiki")
+            return (200, profileFixture)
+        }
+        defer { finish(network, identifier) }
+        #expect(await account.verifyEmailCode(email: "reader@example.com", code: "12345678", purpose: .signup))
         try await waitForProfile(account)
         #expect(account.needsProfile)
+        #expect(account.needsUsernameChoice)
         #expect(account.suggestedFirstName == "Kiki")
-        #expect(account.suggestedUsername == "desired_handle")
-        #expect(await requests.paths.allSatisfy { !$0.contains("/rpc/") })
+        #expect(account.errorMessage == "That username is already taken. Choose another one.")
+        #expect(await account.completeProfile(firstName: account.suggestedFirstName, username: "kiki_reader"))
+        #expect(!account.needsProfile)
+        #expect(!account.needsUsernameChoice)
+    }
+
+    @Test
+    func automaticProfileSaveFailureOffersRetryInsteadOfRepeatingQuestions() async throws {
+        let requests = AccountRequestLog()
+        let (account, network, identifier) = makeAccount(profileHandler: { _ in (200, Data("[]".utf8)) }) { request in
+            if request.url?.path == "/auth/v1/verify" {
+                return (200, makeAuthSession(metadata: ["first_name": "Kiki", "username": "kiki_reader"]))
+            }
+            let count = await requests.add(request)
+            if count == 1 { return (403, Data("{\"code\":\"42501\",\"message\":\"temporary failure\"}".utf8)) }
+            return (200, profileFixture)
+        }
+        defer { finish(network, identifier) }
+        #expect(await account.verifyEmailCode(email: "reader@example.com", code: "12345678", purpose: .signup))
+        try await waitForProfile(account)
+        #expect(account.profile == nil)
+        #expect(!account.needsProfile)
+        #expect(!account.needsUsernameChoice)
+        #expect(account.errorMessage != nil)
+        await account.reloadProfile()
+        #expect(account.profile?.username == "kiki_reader")
+        #expect(account.errorMessage == nil)
     }
 
     @Test
@@ -260,7 +413,7 @@ struct AccountSessionTests {
         }) { request in
             if request.url?.path == "/auth/v1/logout" { return (204, Data()) }
             let body = String(decoding: request.httpBody ?? Data(), as: UTF8.self)
-            return (200, body.contains("second@example.com") ? makeAuthSession(userID: secondUserID, metadata: ["first_name": "Other", "username": "other_reader"]) : authSessionFixture)
+            return (200, body.contains("second@example.com") ? makeAuthSession(userID: secondUserID, metadata: ["username": "other_reader"]) : authSessionFixture)
         }
         defer { finish(network, identifier) }
         #expect(await account.signIn(email: "reader@example.com", password: "password123"))

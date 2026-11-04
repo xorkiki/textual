@@ -193,6 +193,7 @@ final class SocialStore {
     @ObservationIgnored private var uploadedProfileGenres: [ProfileGenreEntry]?
     @ObservationIgnored private var profileGenreTask: Task<Bool, Never>?
     @ObservationIgnored private var indicatorTask: Task<Void, Never>?
+    @ObservationIgnored private var latestNoticeDate: Date?
     @ObservationIgnored private let noticeDefaults = UserDefaults.standard
     /// Published card photos for rows and the feed; bounded and cleared with the account.
     @ObservationIgnored private let avatars: NSCache<NSString, NSData> = {
@@ -236,7 +237,7 @@ final class SocialStore {
         profileOrder = []
         avatars.removeAllObjects()
         friends = []; incoming = []; outgoing = []; friendsLoaded = false; pending = []
-        pendingRequestNotice = false; hasUnreadFeed = false
+        pendingRequestNotice = false; hasUnreadFeed = false; latestNoticeDate = nil
         searchQuery = ""; searchResults = []; searchNext = nil; searchHasMore = false
         resetFeed()
         resetDiscovery()
@@ -307,6 +308,7 @@ final class SocialStore {
         if let requestPage { pendingRequestNotice = !requestPage.incoming.isEmpty }
         let key = "textual.social.lastSeenFeed.\(userID.uuidString)"
         if let feedPage {
+            latestNoticeDate = feedPage.events.first?.publishedDate
             if let seen = noticeDefaults.object(forKey: key) as? Double,
                let latest = feedPage.events.first?.publishedDate {
                 hasUnreadFeed = latest.timeIntervalSince1970 > seen
@@ -321,9 +323,12 @@ final class SocialStore {
 
     func markFeedSeen() {
         guard active, feedLoaded else { return }
-        noticeDefaults.set(now().timeIntervalSince1970,
-                           forKey: "textual.social.lastSeenFeed.\(userID.uuidString)")
-        hasUnreadFeed = false
+        let key = "textual.social.lastSeenFeed.\(userID.uuidString)"
+        guard let loadedThrough = feedEvents.compactMap(\.publishedDate).max()
+                ?? feedCutoff.flatMap(DiscoveryDate.parse) else { return }
+        let seen = max(noticeDefaults.double(forKey: key), loadedThrough.timeIntervalSince1970)
+        noticeDefaults.set(seen, forKey: key)
+        hasUnreadFeed = latestNoticeDate.map { $0.timeIntervalSince1970 > seen } ?? false
     }
 
     /// Server-confirmed: the UI shows "sending" until the server answers.

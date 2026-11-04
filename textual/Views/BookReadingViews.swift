@@ -122,6 +122,7 @@ private struct ReadingEntrySheet: View {
                 }.padding(TextualLayout.pageInset)
             }
             .scrollDismissesKeyboard(.interactively)
+            .textualKeyboardDoneButton()
             .foregroundStyle(Color.paper).background(Color.inkwell)
             .textualSheetHeader(sheetTitle) { dismiss() }
             .onAppear {
@@ -170,16 +171,6 @@ struct BookReadingSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
-                TextualDropdown(label: "Reading status", title: reading.statusLabel,
-                    options: [
-                        .init(value: "currently-reading", title: "Currently reading"),
-                        .init(value: "read", title: "Finish + rate"),
-                        .init(value: "to-read", title: "To read"),
-                        .init(value: "did-not-finish", title: "Did not finish")
-                    ], selection: Binding(get: { reading.status }, set: { status in
-                        if status == "read" { route = .init(book: book, action: .finish) }
-                        else { setStatus(status) }
-                    }))
                 Spacer()
                 Button { route = .init(book: book, action: .progress) } label: {
                     Label(reading.journal?.progress?.label ?? "Update progress", textualIcon: .pieChart)
@@ -248,13 +239,6 @@ struct BookReadingSection: View {
                     .padding(14).background(Color.velvet, in: RoundedRectangle(cornerRadius: TextualLayout.cardRadius))
             }
         }
-    }
-
-    private func setStatus(_ status: String) {
-        do {
-            try BookReadingActions.setStatus(status, book: book, context: context, repository: repository)
-            Task { await repository?.synchronize() }
-        } catch { self.error = error.localizedDescription }
     }
 
     private func deleteQuote(_ entry: ReadingJournal.Entry) {

@@ -2,7 +2,7 @@ import SwiftUI
 import Observation
 import UIKit
 
-/// One local shelf drag, scoped to the signed-in account's tab host.
+/// One local shelf drag, scoped to the screen hosting its shelf and trash target.
 @MainActor @Observable
 final class ReaderShelfDrag {
     private(set) var bookID: UUID?
@@ -414,4 +414,34 @@ struct ReaderShelfTrashTarget: UIViewRepresentable {
         return view
     }
     func updateUIView(_ uiView: UIView, context: Context) { state.trashView = uiView }
+}
+
+/// A sheet needs its own visible drop target because the tab bar is underneath it.
+struct ReaderShelfFloatingTrash: View {
+    let state: ReaderShelfDrag
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        ZStack {
+            if state.isActive {
+                DesignSystemIconView(.remove, size: TextualIconStyle.navigation.size)
+                    .foregroundStyle(state.isOverTrash ? Color.paper : Color.ghost)
+                    .frame(width: 56, height: 56)
+                    .background(state.isOverTrash ? Color.bloodletter : Color.controlSurface, in: Circle())
+                    .animation(.easeInOut(duration: 0.16), value: state.isOverTrash)
+                    .accessibilityHidden(true)
+                    .overlay {
+                        ReaderShelfTrashTarget(state: state)
+                            .accessibilityLabel("Remove book from shelf")
+                            .accessibilityHint("Drop the lifted book here. It stays in your archive.")
+                            .accessibilityIdentifier("profile.shelfTrash")
+                    }
+                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.6)))
+            }
+        }
+        .frame(width: 56, height: 56)
+        .animation(reduceMotion ? .easeInOut(duration: 0.15) : .spring(response: 0.34, dampingFraction: 1),
+                   value: state.isActive)
+        .allowsHitTesting(state.isActive)
+    }
 }

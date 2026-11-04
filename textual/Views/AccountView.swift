@@ -9,6 +9,7 @@ struct AccountView: View {
     @State private var step: Step = .welcome
     @State private var draft = Draft()
     @State private var showsPassword = false
+    @State private var restorePasswordFocus = false
     @State private var validationMessage: String?
     @State private var isSubmittingSignup = false
     @State private var confirmationKind: ConfirmationKind = .signup
@@ -41,7 +42,7 @@ struct AccountView: View {
         if session.isSignedIn {
             if session.isLoadingProfile { return .loadingProfile }
             if session.needsProfile {
-                return step == .profileUsername ? .profileUsername : .profileFirstName
+                return session.needsUsernameChoice || step == .profileUsername ? .profileUsername : .profileFirstName
             }
             return session.profile == nil ? .profileError : .account
         }
@@ -58,7 +59,9 @@ struct AccountView: View {
                     .textualChromeBackground(edge: .top)
                     .zIndex(1)
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 28) {
+                    // These short forms need stable sizing as the keyboard and
+                    // step change together; lazy layout can repeatedly remeasure.
+                    VStack(alignment: .leading, spacing: 28) {
                         content
                         if screen != .creating && screen != .checkEmail {
                             feedback
@@ -77,6 +80,15 @@ struct AccountView: View {
             }
         }
         .textualScreenDefaults()
+        .toolbar {
+            if focusedField == .emailCode {
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") { focusedField = nil }
+                        .accessibilityLabel("Dismiss keyboard")
+                }
+            }
+        }
         .task(id: screen) {
             seedProfileDraft()
             guard let target = initialFocus else { focusedField = nil; return }
@@ -304,8 +316,8 @@ struct AccountView: View {
                 }
                 .accessibilityIdentifier("auth.password")
                 Button {
+                    restorePasswordFocus = focusedField == .password
                     showsPassword.toggle()
-                    focusedField = .password
                 } label: {
                     DesignSystemIconView(showsPassword ? .conceal : .preview, size: TextualIconStyle.compact.size)
                         .foregroundStyle(Color.ghost)
@@ -317,6 +329,18 @@ struct AccountView: View {
             }
         }
         .disabled(isBusy)
+        .background {
+            TextualKeyboardInputRegion(isEditing: focusedField == .password).allowsHitTesting(false)
+        }
+        .task(id: showsPassword) {
+            guard restorePasswordFocus else { return }
+            // SecureField and TextField replace one another. Restore focus after
+            // the replacement mounts, rather than focusing the departing field.
+            do { try await Task.sleep(for: .milliseconds(50)) } catch { return }
+            guard [.signupPassword, .signinPassword, .recoveryPassword].contains(screen) else { return }
+            focusedField = .password
+            restorePasswordFocus = false
+        }
     }
 
     private var passwordRequirement: some View {
@@ -456,6 +480,12 @@ struct AccountView: View {
                     Task { await advance() }
                 }
                 .disabled(isBusy)
+                if signupProgress != nil {
+                    AccountSecondaryButton(title: "Already have an account? Sign In", identifier: "auth.signupSignIn") {
+                        begin(draft.email.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .signinEmail : .signinPassword)
+                    }
+                    .disabled(isBusy)
+                }
                 if screen == .checkEmail {
                     Button(session.isSignedIn ? "Back to Account" : "Back to Sign In") {
                         transition(to: session.isSignedIn ? .account : .signinEmail)
@@ -528,6 +558,7 @@ struct AccountView: View {
         focusedField = nil
         validationMessage = nil
         showsPassword = false
+        restorePasswordFocus = false
         draft.emailCode = ""
         session.clearMessages()
         withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) { step = destination }
@@ -583,6 +614,14 @@ struct AccountView: View {
                 if !session.isSignedIn {
                     openCodeEntry(.signup, startCooldown: true, preserveMessage: true)
                 }
+            } else if session.signupEmailAlreadyRegistered {
+                // Keep the email, discard the proposed signup password, and
+                // explain why the next action is Sign In.
+                let explanation = session.errorMessage
+                begin(.signinPassword)
+                validationMessage = explanation
+            } else {
+                focusedField = .username
             }
         case .signinEmail:
             guard validateEmail() else { return }

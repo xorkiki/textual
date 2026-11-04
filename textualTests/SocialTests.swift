@@ -525,6 +525,36 @@ struct SocialStoreTests {
         #expect(!store.hasSocialNotice)
     }
 
+    @Test func viewingCachedFeedDoesNotClearNewerUnseenActivityOrPendingRequests() async throws {
+        let transport = FakeSocialTransport()
+        var clock = Date(timeIntervalSince1970: 1_800_000_000)
+        let store = try makeStore(transport, now: { clock })
+        await store.refreshIndicator()
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let first = FeedGroupingTests.event(.finished, hour: 1,
+            at: formatter.string(from: clock.addingTimeInterval(60)))
+        await transport.setFeed([first])
+        await store.refreshFeed()
+        let newer = FeedGroupingTests.event(.finished, hour: 2,
+            at: formatter.string(from: clock.addingTimeInterval(120)))
+        await transport.setFeed([newer, first])
+        let reader = SocialReader(userID: UUID(), username: "bea", firstName: "Bea", avatarPath: nil,
+                                  relationship: ReaderRelationship(state: .incoming, requestID: UUID()))
+        await transport.setIncoming([reader])
+        await store.refreshIndicator()
+        clock = clock.addingTimeInterval(180)
+        store.markFeedSeen()
+        #expect(store.hasUnreadFeed, "Only the older snapshot was viewed")
+        await store.refreshFeed()
+        store.markFeedSeen()
+        #expect(!store.hasUnreadFeed)
+        #expect(store.hasSocialNotice, "Unanswered friend requests keep their dot")
+        await transport.setIncoming([])
+        await store.reloadFriends()
+        #expect(!store.hasSocialNotice)
+    }
+
     @Test func genrePublicationRetriesAndSkipsUnchangedEntries() async throws {
         let transport = FakeSocialTransport()
         let store = try makeStore(transport)

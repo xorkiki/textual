@@ -34,19 +34,23 @@ struct textualApp: App {
 
     var body: some Scene {
         WindowGroup {
-            #if DEBUG
-            if ProcessInfo.processInfo.arguments.contains("--hold-slide-ui-test") {
-                HoldSlideTestHarness()
-            } else if ProcessInfo.processInfo.arguments.contains("--discover-ui-test") {
-                DiscoverTestHarness()
-            } else if ProcessInfo.processInfo.arguments.contains("--community-ui-test") {
-                CommunityTestHarness()
-            } else {
+            Group {
+                #if DEBUG
+                if ProcessInfo.processInfo.arguments.contains("--hold-slide-ui-test") {
+                    HoldSlideTestHarness()
+                } else if ProcessInfo.processInfo.arguments.contains("--discover-ui-test") {
+                    DiscoverTestHarness()
+                } else if ProcessInfo.processInfo.arguments.contains("--community-ui-test") {
+                    CommunityTestHarness()
+                } else {
+                    ContentView(legacyContainer: sharedModelContainer)
+                }
+                #else
                 ContentView(legacyContainer: sharedModelContainer)
+                #endif
             }
-            #else
-            ContentView(legacyContainer: sharedModelContainer)
-            #endif
+            .background { TextualKeyboardDismissal().frame(width: 0, height: 0).allowsHitTesting(false) }
+            .scrollDismissesKeyboard(.interactively)
         }
         .modelContainer(sharedModelContainer)
     }

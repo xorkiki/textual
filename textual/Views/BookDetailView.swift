@@ -19,6 +19,7 @@ struct BookDetailView: View {
     @Environment(\.reviewLibraryRepository) private var repository
     @State private var route: BookActionRoute?
     @State private var statusError: String?
+    @State private var bookToRemove: Book?
 
     private var reading: StoryGraphReadingData { UpNextQueue.metadata(for: book) }
     
@@ -35,11 +36,15 @@ struct BookDetailView: View {
         .navigationBarBackButtonHidden(true)
         .textualPageHeader {
             if isPresentedAsSheet {
-                TextualHeader(title: nil) { TextualCloseButton { dismiss() } }
+                TextualHeader(title: nil) {
+                    removeButton
+                    TextualCloseButton { dismiss() }
+                }
             } else {
-                TextualHeader(title: nil, backAction: { dismiss() })
+                TextualHeader(title: nil, backAction: { dismiss() }) { removeButton }
             }
         }
+        .archiveBookRemoval($bookToRemove, repository: repository, onRemoved: { dismiss() })
         .sheet(item: $route) { BookActionSheet(route: $0, repository: repository) }
         .alert("Couldn't save reading", isPresented: Binding(get: { statusError != nil }, set: { if !$0 { statusError = nil } })) {
             Button("OK") { statusError = nil }
@@ -47,6 +52,37 @@ struct BookDetailView: View {
         .task(id: book.id) {
             await viewModel.fetchVolume(book: book)
         }
+    }
+
+    @ViewBuilder
+    private var removeButton: some View {
+        if book.modelContext === context, !book.isRemovedFromLibrary {
+            Button { bookToRemove = book } label: { DesignSystemIconView(.remove) }
+                .buttonStyle(IconButtonStyle())
+                .accessibilityLabel("Remove from archive")
+                .accessibilityIdentifier("book.removeFromArchive")
+        }
+    }
+
+    private var isInUpNext: Bool { !UpNextQueue.books(in: [book]).isEmpty }
+    private var readingOptions: [TextualDropdownOption<String>] {
+        var options: [TextualDropdownOption<String>] = [
+            .init(value: "currently-reading", title: "Currently reading"),
+            .init(value: "read", title: "Finish + rate"),
+            .init(value: "to-read", title: "To read"),
+            .init(value: "did-not-finish", title: "Did not finish")
+        ]
+        if !isInUpNext, reading.status != "currently-reading" {
+            options.append(.init(value: "add-up-next", title: "Add to Up Next"))
+        }
+        return options
+    }
+
+    private func addToUpNext() {
+        do {
+            try UpNextQueue.add(book, context: context, repository: repository)
+            Task { await repository?.synchronize() }
+        } catch { statusError = "This book couldn’t be added to Up Next. Please try again." }
     }
 
     private func setReadingStatus(_ status: String) {
@@ -81,16 +117,17 @@ struct BookDetailView: View {
                         // Catalog-only books (Discover, shared shelves) have no status until saved.
                         if !book.isRemovedFromLibrary, book.modelContext != nil {
                             TextualDropdown(label: "Reading status", title: reading.statusLabel,
-                                options: [
-                                    .init(value: "currently-reading", title: "Currently reading"),
-                                    .init(value: "read", title: "Finish + rate"),
-                                    .init(value: "to-read", title: "To read"),
-                                    .init(value: "did-not-finish", title: "Did not finish")
-                                ], selection: Binding(get: { reading.status }, set: { status in
+                                options: readingOptions, selection: Binding(get: { reading.status }, set: { status in
                                     if status == "read" { route = .init(book: book, action: .finish) }
+                                    else if status == "add-up-next" { addToUpNext() }
                                     else { setReadingStatus(status) }
                                 }))
+                            .accessibilityIdentifier("book.readingStatus")
                             .padding(.top, 4)
+                            if isInUpNext {
+                                Text("In Up Next").textStyle(.bodySmall).foregroundStyle(Color.ghost)
+                                    .accessibilityIdentifier("book.inUpNext")
+                            }
                         }
 
                         if let rating = viewModel.averageRating(from: volume) {
@@ -433,6 +470,7 @@ struct ReaderReviewEditor: View {
                 .frame(maxWidth: 650).frame(maxWidth: .infinity)
             }
             .scrollDismissesKeyboard(.interactively)
+            .textualKeyboardDoneButton()
             .foregroundStyle(Color.paper)
             .background(Color.inkwell.ignoresSafeArea())
             .textualSheetHeader(model.presentation.content == nil ? "Write a review" : "Edit review") { dismiss() }

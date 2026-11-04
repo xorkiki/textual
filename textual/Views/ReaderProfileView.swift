@@ -16,6 +16,7 @@ struct ReaderProfileView: View {
     @State private var openedStat: ReaderCardStat?
     @Environment(\.scenePhase) private var scenePhase
     @State private var store: ReaderProfileStore?
+    @State private var shelfDrag = ReaderShelfDrag()
     @State private var showPicker = false
     @State private var showReaders = false
     @State private var showPreview = false
@@ -83,6 +84,10 @@ struct ReaderProfileView: View {
             }
             .background(Color.inkwell.ignoresSafeArea())
             .scrollIndicators(.hidden)
+            .overlay(alignment: .bottom) {
+                ReaderShelfFloatingTrash(state: shelfDrag)
+                    .padding(.bottom, TextualNavigationLayout.bottomPadding)
+            }
             .textualPageHeader { header }
             .toolbar(.hidden, for: .navigationBar)
             .refreshable { await syncNow() }
@@ -137,14 +142,22 @@ struct ReaderProfileView: View {
             .onChange(of: readingLibrary?.isReady) { _, ready in
                 if ready == true { schedulePublication() }
             }
-            .onDisappear { publicationTask?.cancel() }
-            .onChange(of: scenePhase) { _, phase in if phase == .active { synchronize() } }
+            .onDisappear {
+                publicationTask?.cancel()
+                shelfDrag.cancel()
+            }
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active { synchronize() }
+                else { shelfDrag.cancel() }
+            }
             .onOpenURL { url in
                 guard let username = ReaderProfileRoute.username(url) else { return }
                 incomingUsername = username
                 showReaders = true
             }
         }
+        // The profile is presented above the tab bar, so its drag target lives here too.
+        .environment(\.readerShelfDrag, shelfDrag)
     }
 
     /// What the owner's privacy settings keep off the public card (the preview shows it too).
@@ -512,11 +525,10 @@ private struct ProfileFriendsList: View {
                                     .accessibilityLabel("Add \(reader.firstName) as a friend")
                                     .accessibilityIdentifier("profile.addFriend.\(reader.username)")
                                 } else if reader.relationship?.state == ReaderRelationship.State.incoming {
-                                    Button { Task { await act(.accept, reader) } } label: {
-                                        DesignSystemIconView(.checkmark, size: TextualIconStyle.compact.size)
-                                    }
-                                    .disabled(social.pending.contains(reader.userID))
-                                    .accessibilityLabel("Accept \(reader.firstName)’s friend request")
+                                    FriendRequestActions(busy: social.pending.contains(reader.userID),
+                                        identifierPrefix: "profile.request", username: reader.username,
+                                        accept: { Task { await act(.accept, reader) } },
+                                        decline: { Task { await act(.decline, reader) } })
                                 }
                             }
                         }

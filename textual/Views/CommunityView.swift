@@ -38,7 +38,11 @@ struct CommunityView: View {
                     Color.inkwell.ignoresSafeArea()
                 }
             }
-            .textualPageHeader { TextualTabBar(selection: $selection, identifierPrefix: "community.tab") }
+            .textualPageHeader {
+                TextualTabBar(selection: $selection, identifierPrefix: "community.tab", notice: {
+                    $0 == .friends ? social?.pendingRequestNotice == true : social?.hasUnreadFeed == true
+                })
+            }
             .navigationDestination(for: ReaderRoute.self) { PublicReaderProfileView(username: $0.username) }
             .navigationDestination(item: $openedBook) { BookDetailView(book: $0) }
         }
@@ -49,9 +53,20 @@ struct CommunityView: View {
                 await loadViewedFeed()
             }
         }
+        .onChange(of: isActive) { _, active in
+            if !active { TextualKeyboard.dismiss() }
+        }
         .onChange(of: selection) { _, tab in
-            if tab == .feed {
+            TextualKeyboard.dismiss()
+            if isActive, tab == .feed {
                 Task { await loadViewedFeed() }
+            } else if isActive, tab == .friends {
+                Task { await social?.reloadFriends() }
+            }
+        }
+        .onChange(of: social?.pendingRequestNotice) { _, pending in
+            if pending == true, isActive, selection == .friends {
+                Task { await social?.reloadFriends() }
             }
         }
     }
@@ -59,7 +74,7 @@ struct CommunityView: View {
     private func loadViewedFeed() async {
         if social?.hasUnreadFeed == true { await social?.refreshFeed() }
         else { await social?.openFeed() }
-        if selection == .feed, social?.feedMessage == nil { social?.markFeedSeen() }
+        if isActive, selection == .feed, social?.feedMessage == nil { social?.markFeedSeen() }
     }
 
     @ViewBuilder
@@ -70,7 +85,11 @@ struct CommunityView: View {
                 .accessibilityIdentifier("community.page.friends")
         case .feed:
             CommunityFeedPage(social: social, openBook: { openedBook = $0.detailBook() },
-                              findFriends: { withAnimation { selection = .friends } })
+                              findFriends: { withAnimation { selection = .friends } },
+                              refresh: {
+                                  await social.refreshFeed()
+                                  if isActive, selection == .feed, social.feedMessage == nil { social.markFeedSeen() }
+                              })
                 .accessibilityIdentifier("community.page.feed")
         }
     }
@@ -97,8 +116,7 @@ private struct CommunityFriendsPage: View {
                         section("Requests") {
                             ForEach(social.incoming) { reader in
                                 SocialReaderRow(reader: reader) {
-                                    actionButton(.checkmark, "Accept", .accept, reader)
-                                    actionButton(.close, "Decline", .decline, reader)
+                                    requestActions(reader)
                                 }
                             }
                         }
@@ -145,6 +163,7 @@ private struct CommunityFriendsPage: View {
         }
         .scrollIndicators(.hidden)
         .scrollDismissesKeyboard(.interactively)
+        .scrollBounceBehavior(.always, axes: .vertical)
         .refreshable { await social.reloadFriends() }
         .task(id: query) {
             // Debounced; a newer query cancels this one and the store ignores stale replies.
@@ -181,7 +200,7 @@ private struct CommunityFriendsPage: View {
         }
     }
 
-    /// One control per reader whose label follows the server-confirmed state.
+    /// Controls follow the server-confirmed relationship, including both request responses.
     @ViewBuilder
     private func relationshipButton(_ reader: SocialReader) -> some View {
         let state = reader.relationship?.state ?? .none
@@ -191,10 +210,7 @@ private struct CommunityFriendsPage: View {
             case .none:
                 Button(busy ? "Sending…" : "Add") { Task { await social.perform(.send, with: reader) } }
             case .incoming:
-                Button { Task { await social.perform(.accept, with: reader) } } label: {
-                    DesignSystemIconView(.checkmark, size: TextualIconStyle.compact.size)
-                }
-                .accessibilityLabel(busy ? "Sending friend request" : "Accept friend request")
+                requestActions(reader)
             case .outgoing:
                 Button(busy ? "Sending…" : "Requested") { confirmation = (.cancel, reader) }
             case .friends:
@@ -205,14 +221,11 @@ private struct CommunityFriendsPage: View {
         .accessibilityIdentifier("community.relationship.\(reader.username)")
     }
 
-    private func actionButton(_ icon: DesignSystemIcon, _ title: String, _ action: FriendshipAction, _ reader: SocialReader) -> some View {
-        let busy = social.pending.contains(reader.userID)
-        return Button { Task { await social.perform(action, with: reader) } } label: {
-            DesignSystemIconView(icon, size: TextualIconStyle.compact.size)
-        }
-            .disabled(busy)
-            .accessibilityLabel(busy ? "Sending friend request" : "\(title) friend request")
-            .accessibilityIdentifier("community.\(action.rawValue).\(reader.username)")
+    private func requestActions(_ reader: SocialReader) -> some View {
+        FriendRequestActions(busy: social.pending.contains(reader.userID),
+                             identifierPrefix: "community", username: reader.username,
+                             accept: { Task { await social.perform(.accept, with: reader) } },
+                             decline: { Task { await social.perform(.decline, with: reader) } })
     }
 
     private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
@@ -293,6 +306,7 @@ private struct CommunityFeedPage: View {
     let social: SocialStore
     let openBook: (FeedBook) -> Void
     let findFriends: () -> Void
+    let refresh: () async -> Void
 
     var body: some View {
         ScrollView {
@@ -341,13 +355,13 @@ private struct CommunityFeedPage: View {
             .frame(maxWidth: 650).frame(maxWidth: .infinity)
         }
         .scrollIndicators(.hidden)
-        .refreshable { await social.refreshFeed() }
+        .refreshable { await refresh() }
     }
 
     private func unavailable(_ message: String) -> some View {
         VStack(spacing: TextualLayout.groupGap) {
             Text(message).textStyle(.bodyMedium).foregroundStyle(Color.ghost).multilineTextAlignment(.center)
-            Button("Try again") { Task { await social.refreshFeed() } }
+            Button("Try again") { Task { await refresh() } }
                 .buttonStyle(TextualButtonStyle(variant: .tonal))
                 .frame(maxWidth: 200)
                 .accessibilityIdentifier("community.feed.retry")

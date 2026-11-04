@@ -12,7 +12,9 @@ struct CommunityTestHarness: View {
     var body: some View {
         if let setup {
             Group {
-                if ProcessInfo.processInfo.arguments.contains("--community-discover") {
+                if ProcessInfo.processInfo.arguments.contains("--archive-removal-ui-test") {
+                    NavigationStack { ArchiveBooksView(repository: setup.library) }
+                } else if ProcessInfo.processInfo.arguments.contains("--community-discover") {
                     DiscoverView(repository: setup.library)
                 } else {
                     CommunityView()
@@ -42,6 +44,11 @@ private final class CommunityHarnessSetup {
         let user = UUID(uuidString: "00000000-0000-0000-0000-0000000C0FFE")!
         library = LibraryRepository(userID: user, modelContext: container.mainContext, transport: CommunityHarnessLibrary(userID: user))
         social = SocialStore(userID: user, context: container.mainContext, transport: CommunityHarnessTransport())
+        if ProcessInfo.processInfo.arguments.contains("--archive-removal-ui-test") {
+            let book = Book(title: "Archive test book", author: "Test author", isbn: "", coverURL: "", googleBooksVolumeId: "storygraph:archive-test")
+            try BookReadingActions.prepareArchiveStatus(.tbr, for: book)
+            try library.add(book)
+        }
     }
 }
 

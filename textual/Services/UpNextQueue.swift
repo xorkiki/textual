@@ -20,6 +20,16 @@ enum UpNextQueue {
         }.map { $0.0 }
     }
 
+    /// Append once, keeping both the current order and the book's reading status.
+    static func add(_ book: Book, context: ModelContext, repository: LibraryRepository?) throws {
+        guard book.modelContext === context, !book.isRemovedFromLibrary,
+              metadata(for: book).status != "currently-reading" else { throw ReadingActionError.unavailable }
+        let archive = try context.fetch(FetchDescriptor<Book>(predicate: #Predicate { !$0.isRemovedFromLibrary }))
+        let queue = books(in: archive)
+        guard !queue.contains(where: { $0.id == book.id }) else { return }
+        try save(queue + [book], context: context, repository: repository)
+    }
+
     static func moving(_ id: UUID, to target: UUID, in books: [Book]) -> [Book] {
         guard let source = books.firstIndex(where: { $0.id == id }),
               let destination = books.firstIndex(where: { $0.id == target }), source != destination else { return books }

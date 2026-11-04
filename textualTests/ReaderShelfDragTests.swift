@@ -5,6 +5,49 @@ import SwiftUI
 @testable import textual
 
 @MainActor struct ReaderShelfDragTests {
+    @Test func profileTrashIsInsidePresentedSheetAndRemainsUntilDropSettles() async throws {
+        let state = ReaderShelfDrag(), id = UUID(), token = UUID()
+        var removed: [UUID] = []
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 393, height: 852))
+        let root = UIViewController()
+        window.rootViewController = root
+        window.isHidden = false
+        let sheet = UIHostingController(rootView:
+            Color.inkwell.overlay(alignment: .bottom) {
+                ReaderShelfFloatingTrash(state: state).padding(.bottom, 24)
+            }.transaction { $0.disablesAnimations = true }
+        )
+        sheet.modalPresentationStyle = .pageSheet
+        root.present(sheet, animated: false)
+        defer {
+            state.cancel()
+            root.dismiss(animated: false)
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+        state.begin(id: id, token: token, move: { _, _ in }, remove: { removed.append($0) })
+        for _ in 0..<25 {
+            sheet.view.layoutIfNeeded()
+            if state.trashView?.window != nil { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let trash = try #require(state.trashView)
+        #expect(trash.isDescendant(of: sheet.view))
+        #expect(!trash.isHidden && trash.alpha == 1)
+        let frame = try #require(state.trashFrame(in: window))
+        #expect(frame.width == 56 && frame.height == 56)
+        #expect(sheet.view.convert(sheet.view.bounds, to: window).contains(frame))
+        state.track(CGPoint(x: frame.midX, y: frame.midY), in: window)
+        #expect(state.isOverTrash)
+        state.release()
+        try await Task.sleep(for: .milliseconds(30))
+        sheet.view.layoutIfNeeded()
+        #expect(state.trashView?.window === window)
+        #expect(removed.isEmpty)
+        #expect(state.discard(id: id, token: token))
+        #expect(removed == [id])
+    }
+
     @Test(arguments: [ReaderBookshelf.Kind.favorites, .upNext])
     func crossingShelfRowsKeepsTheSameCoverViews(kind: ReaderBookshelf.Kind) async throws {
         let state = ReaderShelfDrag()

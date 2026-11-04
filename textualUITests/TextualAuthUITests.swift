@@ -7,6 +7,39 @@ final class TextualAuthUITests: XCTestCase {
     }
 
     @MainActor
+    func testSignupSignInShortcutPreservesEmailAndClearsNewPassword() throws {
+        let app = XCUIApplication()
+        app.launch()
+        let createAccount = app.buttons["welcome.createAccount"]
+        XCTAssertTrue(createAccount.waitForExistence(timeout: 15), "Requires a signed-out simulator.")
+        createAccount.tap()
+        let email = app.textFields["auth.email"]
+        waitUntilHittable(email)
+        email.tap()
+        email.typeText("reader@example.invalid")
+        tap("auth.next", in: app)
+        let password = app.secureTextFields["auth.password"]
+        waitUntilHittable(password)
+        password.tap()
+        password.typeText("NewSignupPassword9")
+        tap("account.passwordVisibility", in: app)
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 3), "Revealing a password must keep typing available")
+        XCTAssertEqual(app.textFields["auth.password"].value as? String, "NewSignupPassword9")
+        tap("account.passwordVisibility", in: app)
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 3))
+        tap("auth.signupSignIn", in: app)
+        waitUntilHittable(password)
+        XCTAssertTrue(app.buttons["auth.submit"].exists)
+        XCTAssertTrue(app.staticTexts["reader@example.invalid"].exists)
+        tap("account.passwordVisibility", in: app)
+        XCTAssertEqual(app.textFields["auth.password"].value as? String, "Your password")
+        tap("auth.back", in: app)
+        XCTAssertTrue(email.waitForExistence(timeout: 5))
+        XCTAssertEqual(email.value as? String, "reader@example.invalid")
+        // Do not submit Sign In or request email.
+    }
+
+    @MainActor
     func testCreateAccountValidationAndDraftSurviveBackNavigation() throws {
         XCUIDevice.shared.orientation = .portrait
         let app = XCUIApplication()

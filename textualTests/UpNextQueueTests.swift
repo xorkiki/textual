@@ -5,6 +5,24 @@ import Testing
 
 @MainActor
 struct UpNextQueueTests {
+    @Test func addAppendsOnceAndPreservesReadingStatusAndExistingOrder() throws {
+        let container = try ModelContainer(for: Book.self, Tag.self, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        let context = container.mainContext
+        let first = try book("First", status: "to-read", tags: [])
+        let next = try book("Next", status: "read", tags: [])
+        let current = try book("Current", status: "currently-reading", tags: [])
+        for book in [first, next, current] { context.insert(book) }
+        try UpNextQueue.add(first, context: context, repository: nil)
+        try UpNextQueue.add(next, context: context, repository: nil)
+        try UpNextQueue.add(first, context: context, repository: nil)
+        #expect(UpNextQueue.books(in: [first, next]).map(\.id) == [first.id, next.id])
+        #expect(next.importedReading?.status == "read")
+        #expect(throws: ReadingActionError.self) { try UpNextQueue.add(current, context: context, repository: nil) }
+        #expect(throws: ReadingActionError.self) {
+            try UpNextQueue.add(Book(title: "Unsaved", author: "", isbn: ""), context: context, repository: nil)
+        }
+    }
+
     @Test func queuePersistsMovesAndRemovesWithoutDeletingBooks() throws {
         let container = try ModelContainer(for: Book.self, Tag.self, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
         let context = container.mainContext

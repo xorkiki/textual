@@ -24,6 +24,113 @@ final class CommunityUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["@\(username)"].waitForExistence(timeout: 5), "the reader’s public profile opens")
     }
 
+    @MainActor func testFriendSearchKeyboardDismissesWithoutLosingQuery() {
+        let app = launch()
+        let friends = app.buttons["community.tab.friends"]
+        XCTAssertTrue(friends.waitForExistence(timeout: 10))
+        friends.tap()
+        let search = app.textFields["Search by name or username"]
+        XCTAssertTrue(search.waitForExistence(timeout: 5))
+        search.tap()
+        search.typeText("zzzz")
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        search.typeText("\n")
+        waitFor("exists == false", app.keyboards.firstMatch)
+        XCTAssertEqual(search.value as? String, "zzzz")
+
+        search.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        app.buttons["Clear search"].tap()
+        XCTAssertTrue(app.keyboards.firstMatch.exists, "Clear keeps typing available")
+        search.typeText("zzzz")
+        let noResults = app.staticTexts["No readers by that name."]
+        XCTAssertTrue(noResults.waitForExistence(timeout: 5))
+        noResults.tap()
+        waitFor("exists == false", app.keyboards.firstMatch)
+        XCTAssertEqual(search.value as? String, "zzzz")
+
+        search.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        app.buttons["community.tab.feed"].tap()
+        waitFor("exists == false", app.keyboards.firstMatch)
+        friends.tap()
+        XCTAssertEqual(search.value as? String, "zzzz")
+        XCTAssertFalse(app.keyboards.firstMatch.exists, "Returning to Friends must not reopen the keyboard")
+    }
+
+    @MainActor func testRequestIconsClearPendingDotAfterAcceptOrDecline() {
+        for action in ["accept", "decline"] {
+            let app = launch()
+            let friends = app.buttons["community.tab.friends"]
+            XCTAssertTrue(friends.waitForExistence(timeout: 10))
+            waitFor("value == 'New updates'", friends)
+            friends.tap()
+            let accept = app.buttons["community.accept.eli_reads"]
+            let decline = app.buttons["community.decline.eli_reads"]
+            XCTAssertTrue(accept.waitForExistence(timeout: 5))
+            XCTAssertTrue(decline.exists)
+            XCTAssertEqual(accept.label, "Accept friend request")
+            XCTAssertEqual(decline.label, "Decline friend request")
+            XCTAssertGreaterThanOrEqual(accept.frame.width, 43.99)
+            XCTAssertGreaterThanOrEqual(decline.frame.height, 43.99)
+            app.buttons["community.\(action).eli_reads"].tap()
+            waitFor("exists == false", accept)
+            waitFor("value != 'New updates'", friends)
+            if action == "accept" {
+                XCTAssertTrue(app.buttons["community.reader.eli_reads"].exists)
+            } else {
+                XCTAssertFalse(app.buttons["community.reader.eli_reads"].exists)
+            }
+            app.terminate()
+        }
+    }
+
+    @MainActor func testIncomingProfileHasAcceptAndDeclineIcons() {
+        let app = launch()
+        openProfile(app, "eli_reads")
+        XCTAssertTrue(app.buttons["profile.request.accept"].waitForExistence(timeout: 5))
+        let decline = app.buttons["profile.request.decline"]
+        XCTAssertTrue(decline.exists)
+        decline.tap()
+        XCTAssertTrue(app.buttons["profile.relationship"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.buttons["profile.relationship"].label, "Add friend")
+    }
+
+    @MainActor func testArchiveRemovalCanCancelAndHasOnlyOneDetailStatusDropdown() {
+        let app = launch(["--archive-removal-ui-test"])
+        let book = app.buttons.containing(.staticText, identifier: "Archive test book").firstMatch
+        XCTAssertTrue(book.waitForExistence(timeout: 10))
+        book.tap()
+        let remove = app.buttons["book.removeFromArchive"]
+        XCTAssertTrue(remove.waitForExistence(timeout: 5))
+        let statuses = app.buttons.matching(NSPredicate(format: "label == 'Reading status'"))
+        XCTAssertEqual(statuses.allElementsBoundByIndex.filter { $0.isHittable }.count, 1,
+                       "Only the dropdown beside the title is visible; archive filters sit behind the sheet")
+        let detailStatus = app.buttons["book.readingStatus"]
+        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        screenshot.name = "Book details with one status dropdown"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+        detailStatus.tap()
+        let addNext = app.buttons["Add to Up Next"]
+        XCTAssertTrue(addNext.waitForExistence(timeout: 3))
+        addNext.tap()
+        XCTAssertTrue(app.staticTexts["book.inUpNext"].waitForExistence(timeout: 3))
+        XCTAssertEqual(detailStatus.value as? String, "To read")
+        remove.tap()
+        let cancel = app.buttons["Cancel"]
+        XCTAssertTrue(cancel.waitForExistence(timeout: 3))
+        cancel.tap()
+        XCTAssertTrue(remove.exists, "Cancel keeps the book and its detail screen")
+        remove.tap()
+        let confirm = app.buttons.matching(identifier: "Remove from archive").firstMatch
+        XCTAssertTrue(confirm.waitForExistence(timeout: 3))
+        confirm.tap()
+        waitFor("exists == false", remove)
+        XCTAssertTrue(app.buttons["Add a book"].firstMatch.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["Archive test book"].exists)
+    }
+
     @MainActor func testFriendsAndFeedUseTheArchiveTabBar() {
         let app = launch()
         let friends = app.buttons["community.tab.friends"], feed = app.buttons["community.tab.feed"]

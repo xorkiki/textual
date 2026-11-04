@@ -13,6 +13,7 @@ struct TextualTabBar<Tab: TextualTabItem>: View {
     @Binding var selection: Tab?
     /// For example "discover.tab" produces "discover.tab.forYou".
     let identifierPrefix: String
+    var notice: (Tab) -> Bool = { _ in false }
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -34,10 +35,17 @@ struct TextualTabBar<Tab: TextualTabItem>: View {
                         .font(.designSystem(.uiButton))
                         .foregroundStyle(selection == tab ? Color.paper : Color.ghost)
                         .fixedSize()
+                        .overlay(alignment: .topTrailing) {
+                            if notice(tab) {
+                                Circle().fill(Color.bloodletter).frame(width: 6, height: 6)
+                                    .offset(x: 9, y: -2).accessibilityHidden(true)
+                            }
+                        }
                         .frame(minHeight: TextualLayout.touchTarget)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityValue(notice(tab) ? "New updates" : "")
                 .accessibilityAddTraits(selection == tab ? .isSelected : [])
                 .accessibilityIdentifier("\(identifierPrefix).\(tab.identifier)")
             }

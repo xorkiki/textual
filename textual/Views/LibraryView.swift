@@ -21,9 +21,8 @@ struct ArchiveBooksView: View {
     var bottomNavigationInset: CGFloat = 0
     var onBack: (() -> Void)? = nil
     @State private var showConflicts = false
-    @State private var libraryError: String?
+    @State private var bookToRemove: Book?
     @Query(filter: #Predicate<Book> { !$0.isRemovedFromLibrary }, sort: \Book.title) private var books: [Book]
-    @Environment(\.modelContext) private var modelContext
     @State private var showAddBook = false
     @State private var selectedBook: Book?
     @State private var syncBannerHeight: CGFloat = 0
@@ -62,8 +61,8 @@ struct ArchiveBooksView: View {
 
                 ScrollView {
                     if books.isEmpty {
-                        TextualEmptyState(title: "Your archive starts here", icon: .archive,
-                            detail: choosingForQueue ? "Add books to your archive first, then choose your next read here." : "Tap + to find and save your first book.")
+                        ArchiveShelf(books: [], add: { showAddBook = true },
+                            addLabel: "Add a book", addHint: "Find a book for your archive", open: { _ in })
                             .foregroundStyle(Color.paper)
                             .padding(.top, TextualLayout.contentTop)
                             .padding(.bottom, bottomOverlayHeight + 12)
@@ -84,9 +83,9 @@ struct ArchiveBooksView: View {
                                 .buttonStyle(.plain)
                                 .textualContextMenu(isEnabled: !choosingForQueue) {
                                     if !choosingForQueue { Button(role: .destructive) {
-                                        deleteBook(book)
+                                        bookToRemove = book
                                     } label: {
-                                        Label("Delete", textualIcon: .remove)
+                                        Label("Remove from archive", textualIcon: .remove)
                                     } }
                                 }
                             }
@@ -131,11 +130,7 @@ struct ArchiveBooksView: View {
             .sheet(isPresented: $showConflicts) {
                 if let repository { LibraryConflictsView(repository: repository) }
             }
-            .alert("Couldn’t update library", isPresented: Binding(
-                get: { libraryError != nil }, set: { if !$0 { libraryError = nil } }
-            )) {
-                Button("OK") { libraryError = nil }
-            } message: { Text(libraryError ?? "") }
+            .archiveBookRemoval($bookToRemove, repository: repository)
             .sheet(item: $selectedBook) { book in
                 NavigationStack {
                     BookDetailView(book: book, isPresentedAsSheet: true, showsReadingActivity: true)
@@ -198,22 +193,6 @@ struct ArchiveBooksView: View {
             selection: selection)
             .accessibilityIdentifier("archive.\(title.lowercased())")
     }
-
-    private func deleteBook(_ book: Book) {
-        do {
-            if let repository {
-                try repository.remove(book)
-                Task { await repository.synchronize() }
-            } else {
-                modelContext.delete(book)
-                try modelContext.save()
-            }
-        } catch {
-            modelContext.rollback()
-            libraryError = "Your book couldn’t be removed. Please try again."
-        }
-    }
-
 }
 
 struct BookGridItem: View {

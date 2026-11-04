@@ -5,6 +5,8 @@ struct TextualSearchField: View {
     let prompt: String
     @Binding var text: String
     var focus: FocusState<Bool>.Binding? = nil
+    @FocusState private var localFocus: Bool
+    private var fieldFocus: FocusState<Bool>.Binding { focus ?? $localFocus }
     var onClear: (() -> Void)? = nil
     var onSubmit: () -> Void = {}
 
@@ -22,9 +24,7 @@ struct TextualSearchField: View {
             DesignSystemIconView(.search, size: TextualIconStyle.compact.size)
                 .foregroundStyle(Color.ghost)
                 .accessibilityHidden(true)
-            Group {
-                if let focus { field.focused(focus) } else { field }
-            }
+            field.focused(fieldFocus)
             if !text.isEmpty {
                 Button {
                     if let onClear { onClear() } else { text = "" }
@@ -36,6 +36,8 @@ struct TextualSearchField: View {
         .padding(.horizontal, TextualLayout.controlPadding)
         .frame(minHeight: TextualLayout.touchTarget)
         .background(Color.dropdownSurface, in: Capsule())
+        .background { TextualKeyboardInputRegion(isEditing: fieldFocus.wrappedValue).allowsHitTesting(false) }
+        .onDisappear { fieldFocus.wrappedValue = false }
     }
 
     private var field: some View {
@@ -47,7 +49,10 @@ struct TextualSearchField: View {
             .textInputAutocapitalization(.never)
             .autocorrectionDisabled()
             .submitLabel(.search)
-            .onSubmit(onSubmit)
+            .onSubmit {
+                fieldFocus.wrappedValue = false
+                onSubmit()
+            }
             .padding(.vertical, TextualLayout.contentTop)
     }
 }

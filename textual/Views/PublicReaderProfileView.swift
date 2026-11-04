@@ -63,7 +63,6 @@ struct PublicReaderProfileView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { Task { await load(force: true) } }
         }
-        .accessibilityIdentifier("community.profile")
     }
 
     private func message(_ text: String) -> some View {
@@ -78,13 +77,9 @@ struct PublicReaderProfileView: View {
             let state = profile.relationship?.state ?? .none
             let busy = social.pending.contains(profile.userID)
             if state == .incoming {
-                Button { Task { await act(.accept) } } label: {
-                    DesignSystemIconView(.checkmark, size: TextualIconStyle.compact.size)
-                }
-                .buttonStyle(IconButtonStyle())
-                .disabled(busy)
-                .accessibilityLabel(busy ? "Sending friend request" : "Accept friend request")
-                .accessibilityIdentifier("profile.relationship")
+                FriendRequestActions(busy: busy, identifierPrefix: "profile.request",
+                                     accept: { Task { await act(.accept) } },
+                                     decline: { Task { await act(.decline) } })
             } else {
                 Button(busy ? "Sending…" : Self.title(state)) {
                     switch state {

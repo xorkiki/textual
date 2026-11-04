@@ -30,9 +30,9 @@ struct LibraryView: View {
                     VStack(alignment: .leading, spacing: 16) {
                         TextualHeading(title: "Currently reading").padding(.horizontal, TextualLayout.pageInset)
                         if currentlyReading.isEmpty {
-                            Text("Your current reads will have a place here.")
-                                .textStyle(.bodySmall).foregroundStyle(Color.ghost)
-                                .padding(.horizontal, TextualLayout.pageInset)
+                            ArchiveShelf(books: [], add: { showAddBook = true },
+                                addLabel: "Add a book to Currently Reading",
+                                addHint: "Find a book and choose Currently Reading", open: { _ in })
                         } else {
                             ArchiveShelf(books: currentlyReading,
                                 quickAction: { book, action in quickAction = .init(book: book, action: action) },
@@ -50,22 +50,26 @@ struct LibraryView: View {
                             open: { selectedBook = $0 })
                     }
 
-                    NavigationLink(value: Destination.allBooks) {
-                        VStack(alignment: .leading, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 16) {
+                        NavigationLink(value: Destination.allBooks) {
                             sectionHeading("All books", count: books.count)
-                            HStack(alignment: .bottom, spacing: 12) {
-                                ForEach(Array(books.prefix(3))) { book in
-                                    SavedBookCover(book: book, width: 86, height: 129)
-                                        .accessibilityHidden(true)
-                                }
-                                if books.isEmpty {
-                                    Text("Your archive starts with your first book.")
-                                        .textStyle(.bodySmall).foregroundStyle(Color.ghost)
-                                }
-                                Spacer(minLength: 0)
-                            }.padding(.horizontal, TextualLayout.pageInset)
-                        }.contentShape(Rectangle())
-                    }.accessibilityLabel("All books, \(books.count) books. Browse your archive")
+                        }.accessibilityLabel("All books, \(books.count) books. Browse your archive")
+                        if books.isEmpty {
+                            ArchiveShelf(books: [], add: { showAddBook = true },
+                                addLabel: "Add a book", addHint: "Find a book for your archive", open: { _ in })
+                        } else {
+                            NavigationLink(value: Destination.allBooks) {
+                                HStack(alignment: .bottom, spacing: 12) {
+                                    ForEach(Array(books.prefix(3))) { book in
+                                        SavedBookCover(book: book, width: 86, height: 129)
+                                            .accessibilityHidden(true)
+                                    }
+                                    Spacer(minLength: 0)
+                                }.padding(.horizontal, TextualLayout.pageInset)
+                                    .contentShape(Rectangle())
+                            }.accessibilityLabel("Browse all \(books.count) books")
+                        }
+                    }
 
                     VStack(alignment: .leading, spacing: 0) {
                         archiveLink("My reviews", to: .reviews)
@@ -246,10 +250,12 @@ struct UpNextView: View {
 }
 
 /// The same quiet shelf line and dashed add-book tile used on the reader profile.
-private struct ArchiveShelf: View {
+struct ArchiveShelf: View {
     let books: [Book]
     var wraps = false
     var add: (() -> Void)? = nil
+    var addLabel = "Add a book to Up Next"
+    var addHint = "Choose from your archive"
     var move: ((UUID, UUID) -> Void)? = nil
     var remove: ((Book) -> Void)? = nil
     var quickAction: ((Book, BookQuickAction) -> Void)? = nil
@@ -288,7 +294,7 @@ private struct ArchiveShelf: View {
                             .strokeBorder(Color.ghost.opacity(0.4), style: StrokeStyle(lineWidth: 1, dash: [4, 4])) }
                         .overlay { DesignSystemIconView(.add, size: TextualIconStyle.shelfAdd.size).foregroundStyle(Color.ghost) }
                         .frame(width: 100, height: 155)
-                }.accessibilityLabel("Add a book to Up Next").accessibilityHint("Choose from your archive")
+                }.accessibilityLabel(addLabel).accessibilityHint(addHint)
                 Rectangle().fill(wraps ? Color.ghost.opacity(0.3) : Color.clear).frame(height: 6)
             }.frame(width: 100)
         }

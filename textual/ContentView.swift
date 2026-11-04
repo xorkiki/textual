@@ -56,6 +56,7 @@ struct TextualTabView: View {
         .background(Color.inkwell)
         .environment(\.readerShelfDrag, shelfDrag)
         .onChange(of: selectedTab) { _, tab in
+            TextualKeyboard.dismiss()
             visitedTabs.insert(tab)
             shelfDrag.cancel()
             queueDrag.cancel()
@@ -73,7 +74,13 @@ struct TextualTabView: View {
             NavigationStack { PublicReaderProfileView(username: route.username) }
                 .preferredColorScheme(.dark)
         }
-        .task { await social?.refreshIndicator() }
+        .task(id: scenePhase) {
+            guard scenePhase == .active else { return }
+            while !Task.isCancelled {
+                await social?.refreshIndicator()
+                do { try await Task.sleep(for: .seconds(60)) } catch { return }
+            }
+        }
         .environment(\.readingLibrary, readingLibrary)
         .background { ReadingLibraryObserver(cache: readingLibrary) }
         .background { ProfileGenrePublisher(cache: readingLibrary, social: social) }
@@ -333,6 +340,7 @@ private struct TextualBottomBar: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(tab.title)
+                .accessibilityValue(tab == .community && hasSocialNotice ? "New requests or updates" : "")
                 .accessibilityAddTraits(selection == tab ? .isSelected : [])
                 .accessibilityIdentifier("navigation.\(tab.rawValue)")
             }

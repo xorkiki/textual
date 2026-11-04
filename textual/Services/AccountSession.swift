@@ -34,8 +34,10 @@ final class AccountSession {
     private(set) var needsPasswordReset = false
     private(set) var errorMessage: String?
     private(set) var message: String?
+    private(set) var signupEmailAlreadyRegistered = false
     private(set) var profile: AccountProfile?
     private(set) var isLoadingProfile = false
+    private(set) var needsUsernameChoice = false
     private(set) var suggestedFirstName = ""
     private(set) var suggestedUsername = ""
     private(set) var accountDeletionGeneration = 0
@@ -91,6 +93,7 @@ final class AccountSession {
     }
 
     func clearMessages() {
+        signupEmailAlreadyRegistered = false
         errorMessage = nil
         message = nil
     }
@@ -134,8 +137,32 @@ final class AccountSession {
         guard let client = beginOperation() else { return false }
         defer { isWorking = false }
         guard let email = validatedEmail(email), validatedPassword(password) else { return false }
+        // Check once on submit, before creating an Auth user or sending email.
+        // The profile's unique constraint remains authoritative when claiming the name.
+        if let username = metadata["username"]?.stringValue {
+            do {
+                let available: Bool = try await client.rpc("textual_username_available", params:
+                    UsernameParameters(p_username: username)).execute().value
+                guard available else {
+                    errorMessage = "That username is already taken. Choose another one."
+                    return false
+                }
+            } catch {
+                if !Task.isCancelled {
+                    errorMessage = "Couldn’t check that username. Please try again."
+                }
+                return false
+            }
+        }
+        guard !Task.isCancelled else { return false }
         do {
             let response = try await client.auth.signUp(email: email, password: password, data: metadata, redirectTo: Self.callbackURL)
+            // With email confirmation enabled, Auth can return an obfuscated
+            // existing user instead of an error. Never treat that as a new signup.
+            if response.session == nil, response.user.identities?.isEmpty == true {
+                showExistingSignupEmail()
+                return false
+            }
             if let session = response.session {
                 apply(session)
             } else {
@@ -143,9 +170,19 @@ final class AccountSession {
             }
             return true
         } catch {
-            show(error)
+            if let authError = error as? AuthError,
+               ["email_exists", "user_already_exists"].contains(authError.errorCode.rawValue) {
+                showExistingSignupEmail()
+            } else {
+                show(error)
+            }
             return false
         }
+    }
+
+    private func showExistingSignupEmail() {
+        signupEmailAlreadyRegistered = true
+        errorMessage = "An account already uses this email. Sign in instead."
     }
 
     @discardableResult
@@ -338,6 +375,11 @@ final class AccountSession {
         defer {
             if profileRequestID == requestID { isLoadingProfile = false }
         }
+        return await saveProfile(fields, ownerID: ownerID, requestID: requestID, client: client)
+    }
+
+    private func saveProfile(_ fields: (firstName: String, username: String), ownerID: UUID,
+                             requestID: UUID, client: SupabaseClient) async -> Bool {
         do {
             let saved: AccountProfile = try await client.rpc("textual_upsert_profile", params: ProfileParameters(
                 p_expected_user_id: ownerID, p_first_name: fields.firstName, p_username: fields.username
@@ -348,18 +390,24 @@ final class AccountSession {
                 return false
             }
             profile = saved
+            needsUsernameChoice = false
             suggestedFirstName = saved.firstName
             suggestedUsername = saved.username
             return true
         } catch {
             guard isCurrentProfileRequest(requestID, ownerID: ownerID) else { return false }
             if let databaseError = error as? PostgrestError, databaseError.code == "23505" {
+                needsUsernameChoice = true
                 errorMessage = "That username is already taken. Choose another one."
             } else if !Task.isCancelled {
                 errorMessage = "Your profile couldn’t be saved. Please try again."
             }
             return false
         }
+    }
+
+    private struct UsernameParameters: Encodable {
+        let p_username: String
     }
 
     private struct ProfileParameters: Encodable {
@@ -402,6 +450,18 @@ final class AccountSession {
                 if let profile = rows.first {
                     self.suggestedFirstName = profile.firstName
                     self.suggestedUsername = profile.username
+                } else if !self.suggestedFirstName.isEmpty && !self.suggestedUsername.isEmpty,
+                          let fields = self.validatedProfile(firstName: self.suggestedFirstName,
+                                                             username: self.suggestedUsername) {
+                    // The authenticated session carries the original signup fields,
+                    // including after relaunch or confirmation on another device.
+                    // Keep the loading gate closed until the atomic claim finishes.
+                    let saved = await self.saveProfile(fields, ownerID: ownerID, requestID: requestID, client: client)
+                    guard !Task.isCancelled, self.isCurrentProfileRequest(requestID, ownerID: ownerID) else { return }
+                    if !saved && !self.needsUsernameChoice {
+                        // A connection failure should offer Retry, not repeat onboarding.
+                        self.hasLoadedProfile = false
+                    }
                 }
             } catch {
                 guard !Task.isCancelled, self.isCurrentProfileRequest(requestID, ownerID: ownerID) else { return }
@@ -446,6 +506,7 @@ final class AccountSession {
             profileTask = nil
             profileRequestID = UUID()
             profile = nil
+            needsUsernameChoice = false
             hasLoadedProfile = false
             isLoadingProfile = false
             suggestedFirstName = session?.user.userMetadata["first_name"]?.stringValue ?? ""

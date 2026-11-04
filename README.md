@@ -137,9 +137,15 @@ Page direction saved from Kiki’s October 8, 2026 request (future work):
 
 ## Accounts and profiles
 
-Signup follows welcome → email → password → first name → username, using Textual’s fonts and palette with rounded action buttons. With email confirmation enabled, creating an Auth user does not open the library. The first name and username are saved as suggestions in Auth metadata; a username is not reserved during signup.
+Signup follows welcome → email → password → first name → username, using Textual’s fonts and palette with rounded action buttons. Before creating an Auth user or sending email, signup checks the normalized username once through `textual_username_available`. The lookup uses the existing unique index and returns only a boolean. A taken name keeps the user on the username screen; a failed check offers retry.
 
-After confirmation or sign-in, `AccountSession` fetches the authenticated user's private `textual_profiles` row. Existing profiles are reused. If no row exists, the user explicitly completes their profile using the prefilled suggestions. The `textual_upsert_profile` RPC claims the normalized username atomically; a collision asks the user to choose another name. A failed profile lookup shows a retry screen rather than assuming the profile is missing.
+When Auth reports an existing email, including its obfuscated response with empty identities, the app switches to Sign In with the email retained and the proposed signup password cleared. Every signup step also offers a Sign In shortcut. Email recognition occurs on final submission through Auth.
+
+With email confirmation enabled, signup fields are stored in Auth metadata until confirmation; they do not reserve a username. After confirmation or sign-in, `AccountSession` loads the private `textual_profiles` row. Existing profiles are reused. When no profile exists, valid signup fields are saved automatically through `textual_upsert_profile`, without asking for the name and username again. The unique constraint arbitrates simultaneous claims: a collision asks only for another username. Connection failures offer Retry. Legacy accounts without complete signup fields retain manual onboarding.
+
+Apply `supabase/migrations/20261104041417_username_availability.sql` before shipping the updated client. It is applied to the existing Textual backend. `supabase/tests/username-availability.test.mjs` covers anonymous permissions, normalization, collisions, and index use in a disposable database.
+
+Search fields dismiss on Search while retaining the query. Outside taps and tab changes dismiss the keyboard without consuming the underlying action; Clear Search and password visibility keep editing active. Number-pad and long-text editors offer Done. Empty Currently Reading and All Books sections reuse Up Next’s add-book tile.
 
 `ContentView` opens the signed-in tabs only after session restoration, profile loading/completion, and any password recovery are finished. Supabase stores credentials in its Keychain-backed storage.
 
