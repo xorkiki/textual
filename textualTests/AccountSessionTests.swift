@@ -104,6 +104,36 @@ struct AccountSessionTests {
     }
 
     @Test
+    func recoverySessionPersistsInKeychainBeforeSavingPassword() async throws {
+        // In-memory auth tests cannot detect a simulator app installed without
+        // the signing entitlements required by the production Keychain storage.
+        let storage = KeychainLocalStorage(service: "textual.tests.recovery.\(UUID().uuidString)")
+        let requests = AccountRequestLog()
+        let (account, network, identifier) = makeAccount(storage: storage) { request in
+            await requests.add(request)
+            switch request.url?.path {
+            case "/auth/v1/verify": return (200, authSessionFixture)
+            case "/auth/v1/user": return (200, authUserFixture)
+            default:
+                Issue.record("Unexpected auth endpoint")
+                return (500, Data("{}".utf8))
+            }
+        }
+        defer {
+            try? storage.remove(key: identifier)
+            finish(network, identifier)
+        }
+        #expect(await account.verifyEmailCode(email: "reader@example.com", code: "12345678", purpose: .recovery))
+        try await waitForProfile(account)
+        let persisted = try #require(account.client?.auth.currentSession)
+        #expect(persisted.user.id == fixtureUserID)
+        #expect(account.needsPasswordReset)
+        #expect(await account.updatePassword("new-password-123"))
+        #expect(await requests.paths == ["/auth/v1/verify", "/auth/v1/user"])
+        #expect(!account.needsPasswordReset)
+    }
+
+    @Test
     func failedLogoutStillRemovesLocalAccount() async {
         let (account, network, identifier) = makeAccount { request in
             if request.url?.path == "/auth/v1/logout" { throw URLError(.notConnectedToInternet) }
@@ -617,7 +647,7 @@ struct AccountSessionTests {
         #expect(!account.isLoadingProfile)
     }
 
-    private func makeAccount(profileHandler: AccountURLProtocol.Handler? = nil, handler: @escaping AccountURLProtocol.Handler) -> (AccountSession, URLSession, String) {
+    private func makeAccount(storage: (any AuthLocalStorage)? = nil, profileHandler: AccountURLProtocol.Handler? = nil, handler: @escaping AccountURLProtocol.Handler) -> (AccountSession, URLSession, String) {
         let identifier = UUID().uuidString
         AccountURLProtocol.registry.set({ request in
             if request.url?.path == "/rest/v1/textual_profiles" {
@@ -633,7 +663,7 @@ struct AccountSessionTests {
             supabaseURL: URL(string: "https://account-test.supabase.co")!,
             supabaseKey: "test-publishable-key",
             options: .init(
-                auth: .init(storage: MemoryAccountStorage(), storageKey: identifier, autoRefreshToken: false, emitLocalSessionAsInitialSession: true),
+                auth: .init(storage: storage ?? MemoryAccountStorage(), storageKey: identifier, autoRefreshToken: false, emitLocalSessionAsInitialSession: true),
                 global: .init(headers: ["X-Account-Test": identifier], session: network)
             )
         )
