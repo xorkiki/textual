@@ -5,13 +5,15 @@ import PhotosUI
 
 struct ReaderProfileView: View {
     let account: AccountSession
+    var isPresentedAsSheet = false
+    @Environment(\.dismiss) private var dismiss
     @Query(filter: #Predicate<Book> { !$0.isRemovedFromLibrary }, sort: \Book.title) private var books: [Book]
     @Query private var drafts: [ReaderProfileDraft]
     @Environment(\.modelContext) private var context
     @Environment(\.readingLibrary) private var readingLibrary
     @Environment(\.socialStore) private var social
     @State private var publicationTask: Task<Void, Never>?
-    @State private var showPrivacy = false
+    @State private var openedStat: ReaderCardStat?
     @Environment(\.scenePhase) private var scenePhase
     @State private var store: ReaderProfileStore?
     @State private var showPicker = false
@@ -48,18 +50,9 @@ struct ReaderProfileView: View {
                     ReaderLibraryCard(firstName: account.profile?.firstName ?? "reader",
                                       username: account.profile?.username ?? "reader", content: content,
                                       avatarData: draft?.matchingAvatarData, avatarTransport: avatarTransport,
-                                      choosePhoto: { showPhotoPicker = true }, isPreparingPhoto: isPreparingPhoto)
-                    if hiddenFromVisitors == Set(ReaderCardStat.allCases) {
-                        HStack(spacing: TextualLayout.itemGap) {
-                            Text("Visitors see your card without reading stats.")
-                                .textStyle(.bodySmall).foregroundStyle(Color.ghost)
-                            Spacer(minLength: 0)
-                            Button("Choose") { showPrivacy = true }
-                                .buttonStyle(TextualHeaderActionStyle())
-                                .accessibilityLabel("Choose what visitors see")
-                                .accessibilityIdentifier("profile.choosePrivacy")
-                        }
-                    }
+                                      choosePhoto: { showPhotoPicker = true }, isPreparingPhoto: isPreparingPhoto,
+                                      selectStat: { openedStat = $0 })
+                    ProfileFriendsSection(username: account.profile?.username ?? "", isOwner: true)
                     ReaderBookshelf(readerName: account.profile?.firstName ?? "reader", favorites: content.favorites, isOwner: true,
                         add: { showPicker = true },
                         move: { id, target in saveFavorites(ReaderShelf.moving(id, to: target, in: content.favorites)) },
@@ -100,12 +93,22 @@ struct ReaderProfileView: View {
             .sheet(isPresented: $showPicker) {
                 ReaderFavoritePicker(books: books, favorites: content.favorites, save: saveFavorites)
             }
+            .sheet(item: $openedStat) { stat in
+                OwnerStatSheet(stat: stat, books: books,
+                    genres: readingLibrary?.profile.genreBreakdown ?? content.genreBreakdown ?? [],
+                    completedReads: Dictionary(uniqueKeysWithValues:
+                        (readingLibrary?.snapshot.entries ?? []).map {
+                            ($0.id, $0.reading.map(ReadingStatsFilter.completedCount) ?? 0)
+                        }),
+                    knownGenres: Dictionary(uniqueKeysWithValues:
+                        (readingLibrary?.snapshot.entries ?? []).map { ($0.id, $0.genres) }))
+            }
             .sheet(isPresented: $showPreview) {
                 NavigationStack {
                     PublicReaderProfilePage(firstName: account.profile?.firstName ?? "reader",
                                             username: account.profile?.username ?? "reader", content: content,
                                             avatarData: draft?.matchingAvatarData, avatarTransport: avatarTransport,
-                                            hiddenStats: hiddenFromVisitors)
+                                            hiddenStats: hiddenFromVisitors, isOwner: true)
                         .textualSheetHeader("Public view") { showPreview = false }
                 }
                 .preferredColorScheme(.dark)
@@ -113,9 +116,6 @@ struct ReaderProfileView: View {
             .sheet(isPresented: $showReaders) {
                 ReaderProfileLookup(initialUsername: incomingUsername ?? "")
                     .environment(\.socialStore, social)
-            }
-            .sheet(isPresented: $showPrivacy) {
-                SocialPrivacySettingsView().environment(\.socialStore, social)
             }
             .alert("Couldn’t add photo", isPresented: Binding(get: { photoError != nil }, set: { if !$0 { photoError = nil } })) {
                 Button("OK") { photoError = nil }
@@ -159,10 +159,13 @@ struct ReaderProfileView: View {
 
     private var header: some View {
         TextualHeader(title: "PROFILE") {
-            Button { showPreview = true } label: { DesignSystemIconView(.preview) }
-                .buttonStyle(IconButtonStyle())
-                .accessibilityLabel("Preview public profile")
-                .accessibilityIdentifier("profile.publicPreview")
+            HStack(spacing: TextualLayout.groupGap) {
+                Button { showPreview = true } label: { DesignSystemIconView(.preview) }
+                    .buttonStyle(IconButtonStyle())
+                    .accessibilityLabel("Preview public profile")
+                    .accessibilityIdentifier("profile.publicPreview")
+                if isPresentedAsSheet { TextualCloseButton { dismiss() } }
+            }
         }
     }
 
@@ -220,6 +223,119 @@ struct ReaderProfileView: View {
     private func resolve(keepLocal: Bool) {
         do { try store?.resolveConflict(keepLocal: keepLocal); synchronize() }
         catch { saveError = "Your shelf couldn’t be saved. Please try again." }
+    }
+}
+
+/// The owner's card uses the same cover-only detail sheet as Stats, backed by
+/// their local archive so these taps never wait for a profile RPC.
+private struct OwnerStatSheet: View {
+    let stat: ReaderCardStat
+    let books: [Book]
+    let genres: [ReaderGenreShare]
+    let completedReads: [UUID: Int]
+    let knownGenres: [UUID: Set<String>]
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectedBook: Book?
+    @State private var selectedGenre: GenreSelection?
+
+    private struct GenreSelection: Identifiable {
+        let name: String
+        var id: String { name }
+    }
+
+    private var matches: [Book] {
+        books.filter { book in
+            let count = completedReads[book.id] ?? 0
+            return stat == .reads ? count > 0 : count > 1
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                Color.inkwell.ignoresSafeArea()
+                ScrollView {
+                    if stat == .genres {
+                        GenreStatsChart(genres: genres.map { GenreStat(name: $0.name, count: $0.reads ?? $0.books) },
+                                        showsHeading: false) {
+                            selectedGenre = GenreSelection(name: $0)
+                        }
+                        .padding(TextualLayout.pageInset)
+                    } else if matches.isEmpty {
+                        TextualEmptyState(title: "No books yet", icon: .archive,
+                                          detail: "Books in this category will appear here.")
+                            .padding(TextualLayout.pageInset)
+                    } else {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 120), spacing: 16)], spacing: 20) {
+                            ForEach(matches) { book in
+                                Button { selectedBook = book } label: {
+                                    SavedBookCover(book: book, width: 120, height: 180)
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("\(book.title) by \(book.author)")
+                            }
+                        }
+                        .padding(TextualLayout.pageInset)
+                    }
+                }
+                .scrollIndicators(.hidden)
+            }
+            .textualSheetHeader(stat.title) { dismiss() }
+            .sheet(item: $selectedBook) { book in
+                NavigationStack { BookDetailView(book: book, isPresentedAsSheet: true) }
+            }
+            .sheet(item: $selectedGenre) { genre in
+                OwnerGenreBooksSheet(name: genre.name, books: books,
+                    completedReads: completedReads, knownGenres: knownGenres)
+            }
+        }
+        .preferredColorScheme(.dark)
+    }
+}
+
+private struct OwnerGenreBooksSheet: View {
+    let name: String
+    let books: [Book]
+    let completedReads: [UUID: Int]
+    let knownGenres: [UUID: Set<String>]
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectedBook: Book?
+
+    private var matches: [Book] {
+        books.filter { book in
+            guard (completedReads[book.id] ?? 0) > 0 else { return false }
+            let genres = knownGenres[book.id] ?? []
+            return name == "Unclassified" ? genres.isEmpty : genres.contains(name)
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                if matches.isEmpty {
+                    TextualEmptyState(title: "No matching books", icon: .archive,
+                                      detail: "There are no books in this genre yet.")
+                        .padding(TextualLayout.pageInset)
+                } else {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 120), spacing: 16)], spacing: 20) {
+                        ForEach(matches) { book in
+                            Button { selectedBook = book } label: {
+                                SavedBookCover(book: book, width: 120, height: 180)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("\(book.title) by \(book.author)")
+                        }
+                    }
+                    .padding(TextualLayout.pageInset)
+                }
+            }
+            .background(Color.inkwell.ignoresSafeArea())
+            .textualSheetHeader(name) { dismiss() }
+            .sheet(item: $selectedBook) { book in
+                NavigationStack { BookDetailView(book: book, isPresentedAsSheet: true) }
+            }
+        }
+        .preferredColorScheme(.dark)
     }
 }
 
@@ -294,6 +410,7 @@ struct PublicReaderProfilePage: View {
     var avatarTransport: (any ReaderAvatarTransport)? = nil
     var hiddenStats: Set<ReaderCardStat> = []
     var selectStat: ((ReaderCardStat) -> Void)? = nil
+    var isOwner = false
     @State private var selectedBook: Book?
 
     var body: some View {
@@ -302,12 +419,154 @@ struct PublicReaderProfilePage: View {
                 ReaderLibraryCard(firstName: firstName, username: username, content: content,
                                   avatarData: avatarData, avatarTransport: avatarTransport,
                                   hiddenStats: hiddenStats, selectStat: selectStat)
+                ProfileFriendsSection(username: username, isOwner: isOwner)
                 ReaderBookshelf(readerName: firstName, favorites: content.favorites, open: { selectedBook = $0.detailBook() })
             }
             .padding(TextualLayout.pageInset).frame(maxWidth: 650).frame(maxWidth: .infinity)
         }
         .background(Color.inkwell.ignoresSafeArea())
         .navigationDestination(item: $selectedBook) { BookDetailView(book: $0) }
+    }
+}
+
+/// A compact preview of accepted friendships. The full list is fetched only when
+/// opened, so profiles don't fetch hundreds of readers just to show five photos.
+struct ProfileFriendsSection: View {
+    let username: String
+    var isOwner = false
+    @Environment(\.socialStore) private var social
+    @State private var friends: [SocialReader] = []
+    @State private var loaded = false
+    @State private var failure: String?
+    @State private var showList = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: TextualLayout.itemGap) {
+            TextualHeading(title: "Friends")
+            GeometryReader { geometry in
+                let count = max(1, min(5, Int((geometry.size.width - 44 + 8) / 48)))
+                HStack(spacing: 8) {
+                    ForEach(Array(friends.prefix(count))) { reader in
+                        ReaderAvatarBadge(reader: reader, size: 40, circle: true)
+                            .frame(width: 40, height: 40)
+                            .accessibilityLabel("\(reader.firstName), @\(reader.username)")
+                    }
+                    if friends.isEmpty {
+                        Text(failure ?? (loaded ? "No friends yet" : "Loading friends…"))
+                            .textStyle(.bodySmall).foregroundStyle(Color.ghost)
+                    }
+                    Spacer(minLength: 0)
+                    Button { showList = true } label: {
+                        DesignSystemIconView(.chevronRight, size: TextualIconStyle.compact.size)
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("See all friends")
+                    .accessibilityIdentifier("profile.allFriends")
+                }
+            }
+            .frame(height: 44)
+        }
+        .task(id: username) { await load() }
+        .sheet(isPresented: $showList, onDismiss: { Task { await load() } }) {
+            ProfileFriendsList(username: username, isOwner: isOwner)
+        }
+    }
+
+    private func load() async {
+        guard let social, !username.isEmpty else { return }
+        do {
+            let page = try await social.profileFriends(username: username, after: nil, limit: 5)
+            friends = page.friends
+            loaded = true
+            failure = nil
+        } catch is CancellationError { }
+        catch { failure = "Friends couldn’t load." }
+    }
+}
+
+private struct ProfileFriendsList: View {
+    let username: String
+    let isOwner: Bool
+    @Environment(\.socialStore) private var social
+    @Environment(\.dismiss) private var dismiss
+    @State private var friends: [SocialReader] = []
+    @State private var next: String?
+    @State private var loaded = false
+    @State private var loading = false
+    @State private var failure: String?
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: TextualLayout.groupGap) {
+                    ForEach(friends) { reader in
+                        SocialReaderRow(reader: reader) {
+                            if let social, !isOwner, reader.userID != social.userID {
+                                if reader.relationship?.state == ReaderRelationship.State.none {
+                                    Button { Task { await act(.send, reader) } } label: {
+                                        DesignSystemIconView(.add, size: TextualIconStyle.compact.size)
+                                    }
+                                    .disabled(social.pending.contains(reader.userID))
+                                    .accessibilityLabel("Add \(reader.firstName) as a friend")
+                                    .accessibilityIdentifier("profile.addFriend.\(reader.username)")
+                                } else if reader.relationship?.state == ReaderRelationship.State.incoming {
+                                    Button { Task { await act(.accept, reader) } } label: {
+                                        DesignSystemIconView(.checkmark, size: TextualIconStyle.compact.size)
+                                    }
+                                    .disabled(social.pending.contains(reader.userID))
+                                    .accessibilityLabel("Accept \(reader.firstName)’s friend request")
+                                }
+                            }
+                        }
+                        .onAppear {
+                            if reader.id == friends.last?.id { Task { await loadMore() } }
+                        }
+                    }
+                    if loading { ProgressView().tint(.paper).frame(maxWidth: .infinity) }
+                    if friends.isEmpty && loaded && failure == nil {
+                        TextualEmptyState(title: "No friends yet", icon: .people,
+                                          detail: "Friends will appear here once requests are accepted.")
+                    }
+                    if let failure {
+                        Text(failure).textStyle(.bodySmall).foregroundStyle(Color.ghost)
+                        Button("Try again") { Task { await loadMore() } }
+                    }
+                }
+                .padding(TextualLayout.pageInset)
+            }
+            .background(Color.inkwell.ignoresSafeArea())
+            .textualSheetHeader("Friends") { dismiss() }
+            .navigationDestination(for: ReaderRoute.self) { PublicReaderProfileView(username: $0.username) }
+            .refreshable { await reload() }
+            .task { await loadMore() }
+        }
+        .preferredColorScheme(.dark)
+    }
+
+    private func reload() async {
+        friends = []; next = nil; loaded = false; failure = nil
+        await loadMore()
+    }
+
+    private func loadMore() async {
+        guard let social, !loading, !loaded || next != nil else { return }
+        loading = true
+        defer { loading = false }
+        do {
+            let page = try await social.profileFriends(username: username, after: next)
+            friends += page.friends.filter { reader in !friends.contains { $0.id == reader.id } }
+            next = page.next
+            loaded = true
+            failure = nil
+        } catch is CancellationError { }
+        catch { failure = "Friends couldn’t load. Please try again." }
+    }
+
+    private func act(_ action: FriendshipAction, _ reader: SocialReader) async {
+        guard let social, await social.perform(action, with: reader) else { return }
+        await reload()
     }
 }
 

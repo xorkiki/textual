@@ -15,7 +15,8 @@ struct MoodStatsTests {
         let all = MoodStat.counts(readings: readings, filter: .init(status: "read", year: nil))
         #expect(all.first { $0.name == "Dark" }?.count == 3)
         #expect(all.first { $0.name == "Emotional" }?.count == 2)
-        #expect(all.count == 11)
+        // Twelve standard moods plus the imported custom label.
+        #expect(all.count == 13)
         #expect(all.first { $0.name == "Unlisted" }?.count == 1)
         let year = MoodStat.counts(readings: readings, filter: .init(status: "read", year: 2025))
         #expect(year.first { $0.name == "Dark" }?.count == 2)

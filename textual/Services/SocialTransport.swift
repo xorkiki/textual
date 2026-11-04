@@ -8,6 +8,9 @@ protocol SocialTransport: Sendable {
     func updateSettings(userID: UUID, change: SocialSettingsChange) async throws -> SocialSettings
     func search(query: String, after: ReaderSearchPage.Cursor?, limit: Int) async throws -> ReaderSearchPage
     func friends(after: String?, limit: Int) async throws -> FriendsPage
+    func profileFriends(username: String, after: String?, limit: Int) async throws -> ProfileFriendsPage
+    func publishProfileGenres(userID: UUID, entries: [ProfileGenreEntry]) async throws
+    func genreBooks(username: String, genre: String, after: ProfileBooksPage.Cursor?, limit: Int) async throws -> ProfileBooksPage
     func updateFriendship(userID: UUID, operationID: UUID, action: FriendshipAction, target: UUID,
                           requestID: UUID?) async throws -> FriendshipResult
     func profile(username: String) async throws -> VisitorProfile?
@@ -50,6 +53,27 @@ actor SupabaseSocialTransport: SocialTransport {
     func friends(after: String?, limit: Int) async throws -> FriendsPage {
         struct Parameters: Encodable { let p_after_username: String?; let p_limit: Int }
         return try await call("textual_list_friends", Parameters(p_after_username: after, p_limit: limit))
+    }
+
+    func profileFriends(username: String, after: String?, limit: Int) async throws -> ProfileFriendsPage {
+        struct Parameters: Encodable { let p_username: String; let p_after_username: String?; let p_limit: Int }
+        return try await call("textual_read_profile_friends", Parameters(p_username: username,
+            p_after_username: after, p_limit: limit))
+    }
+
+    func publishProfileGenres(userID: UUID, entries: [ProfileGenreEntry]) async throws {
+        guard try await authenticatedUserID() == userID else { throw SocialError.accountChanged }
+        struct Parameters: Encodable { let p_expected_user_id: UUID; let p_entries: [ProfileGenreEntry] }
+        let _: Bool = try await call("textual_publish_profile_genres",
+            Parameters(p_expected_user_id: userID, p_entries: entries))
+    }
+
+    func genreBooks(username: String, genre: String, after: ProfileBooksPage.Cursor?, limit: Int) async throws -> ProfileBooksPage {
+        struct Parameters: Encodable {
+            let p_username: String; let p_genre: String; let p_after_title: String?; let p_after_id: UUID?; let p_limit: Int
+        }
+        return try await call("textual_read_profile_genre_books", Parameters(p_username: username,
+            p_genre: genre, p_after_title: after?.title, p_after_id: after?.id, p_limit: limit))
     }
 
     func updateFriendship(userID: UUID, operationID: UUID, action: FriendshipAction, target: UUID,

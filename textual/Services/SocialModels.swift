@@ -52,6 +52,21 @@ struct FriendsPage: Decodable, Sendable {
     let next: String?
 }
 
+/// Accepted friendships of the named public profile, paged by username.
+struct ProfileFriendsPage: Decodable, Sendable {
+    let friends: [SocialReader]
+    let next: String?
+}
+
+/// The owner's known per-book genres, sent separately from the public card.
+/// The server exposes covers only when that reader permits genre browsing.
+struct ProfileGenreEntry: Encodable, Equatable, Sendable {
+    let entryID: UUID
+    let genres: [String]
+
+    enum CodingKeys: String, CodingKey { case entryID = "entry_id", genres }
+}
+
 struct FriendshipResult: Decodable, Sendable {
     let outcome: String
     let relationship: ReaderRelationship

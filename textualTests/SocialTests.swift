@@ -499,6 +499,44 @@ struct SocialStoreTests {
         #expect(b.feedGroups.isEmpty)
     }
 
+    @Test func navigationNoticeTracksRequestsAndNewFeedActivity() async throws {
+        let transport = FakeSocialTransport()
+        var clock = Date(timeIntervalSince1970: 1_800_000_000)
+        let store = try makeStore(transport, now: { clock })
+        let reader = SocialReader(userID: UUID(), username: "bea", firstName: "Bea", avatarPath: nil,
+                                  relationship: ReaderRelationship(state: .incoming, requestID: UUID()))
+        await transport.setIncoming([reader])
+        await store.refreshIndicator()
+        #expect(store.hasSocialNotice)
+        await transport.setIncoming([])
+        await store.refreshIndicator()
+        #expect(!store.hasSocialNotice)
+
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let newer = FeedGroupingTests.event(.finished, hour: 1,
+            at: formatter.string(from: clock.addingTimeInterval(60)))
+        await transport.setFeed([newer])
+        await store.refreshIndicator()
+        #expect(store.hasUnreadFeed)
+        clock = clock.addingTimeInterval(120)
+        await store.refreshFeed()
+        store.markFeedSeen()
+        #expect(!store.hasSocialNotice)
+    }
+
+    @Test func genrePublicationRetriesAndSkipsUnchangedEntries() async throws {
+        let transport = FakeSocialTransport()
+        let store = try makeStore(transport)
+        let entries = [ProfileGenreEntry(entryID: UUID(), genres: ["Fantasy"])]
+        await transport.setGenreFailure(true)
+        #expect(await store.publishProfileGenres(entries) == false)
+        await transport.setGenreFailure(false)
+        #expect(await store.publishProfileGenres(entries))
+        #expect(await store.publishProfileGenres(entries))
+        #expect(await transport.genreUploadCount() == 1)
+    }
+
     @Test func discoveryCursorRoundTripsAsAnExactDecimal() throws {
         let json = #"{"snapshot":"2026-10-13T06:05:01.123456+00:00","has_friends":true,"books":[{"book_id":"00000000-0000-0000-0000-000000000001","title":"Emma","author":"Austen","isbn":null,"cover_url":"https://covers.openlibrary.org/b/id/1-L.jpg","catalog_id":"openlibrary:OL1W","sources":["review","shelf"],"score":12.345678}],"next":{"score":12.345678,"book_id":"00000000-0000-0000-0000-000000000001"}}"#
         let page = try JSONDecoder().decode(FriendDiscoveryPage.self, from: Data(json.utf8))
@@ -581,6 +619,9 @@ actor FakeSocialTransport: SocialTransport {
     private var offline = false
     private var feedEvents: [FeedEvent] = []
     private var searchResults: [SocialReader] = []
+    private var incomingReaders: [SocialReader] = []
+    private var genreUploads = 0
+    private var failGenreUpload = false
     private var failFriendship = false
     private var pauseFeed = false
     private var pauseFriendship = false
@@ -593,6 +634,9 @@ actor FakeSocialTransport: SocialTransport {
     func setActivityEnabled(_ value: Bool?) { settingsValue.activityEnabled = value }
     func setFeed(_ events: [FeedEvent]) { feedEvents = events }
     func setSearch(_ readers: [SocialReader]) { searchResults = readers }
+    func setIncoming(_ readers: [SocialReader]) { incomingReaders = readers }
+    func setGenreFailure(_ value: Bool) { failGenreUpload = value }
+    func genreUploadCount() -> Int { genreUploads }
     func setFriendshipFailure(_ value: Bool) { failFriendship = value }
     func pauseNextFeed() { pauseFeed = true }
     func pauseNextFriendship() { pauseFriendship = true }
@@ -627,7 +671,17 @@ actor FakeSocialTransport: SocialTransport {
         ReaderSearchPage(results: searchResults, next: nil)
     }
     func friends(after: String?, limit: Int) async throws -> FriendsPage {
-        FriendsPage(friends: [], incoming: [], outgoing: [], next: nil)
+        FriendsPage(friends: [], incoming: incomingReaders, outgoing: [], next: nil)
+    }
+    func profileFriends(username: String, after: String?, limit: Int) async throws -> ProfileFriendsPage {
+        ProfileFriendsPage(friends: [], next: nil)
+    }
+    func publishProfileGenres(userID: UUID, entries: [ProfileGenreEntry]) async throws {
+        if failGenreUpload { throw URLError(.notConnectedToInternet) }
+        genreUploads += 1
+    }
+    func genreBooks(username: String, genre: String, after: ProfileBooksPage.Cursor?, limit: Int) async throws -> ProfileBooksPage {
+        throw SocialError.forbidden
     }
     func updateFriendship(userID: UUID, operationID: UUID, action: FriendshipAction, target: UUID,
                           requestID: UUID?) async throws -> FriendshipResult {

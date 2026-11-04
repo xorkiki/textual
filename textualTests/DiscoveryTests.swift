@@ -195,6 +195,30 @@ final class DiscoveryRepositoryTests: XCTestCase {
         XCTAssertFalse(repository.failed.contains(.trending))
     }
 
+    func testUnchangedRefreshAndRankingOutputDoNotRestartUnrelatedFeeds() async throws {
+        let transport = FakeDiscoveryTransport()
+        await transport.set(.explore, [row("OL1W")])
+        let (container, repository) = try makeRepository(transport)
+        defer { withExtendedLifetime(container) {} }
+        await repository.refresh(.explore)
+        let exploreVersion = repository.collectionRevision(.explore)
+        let inputVersion = repository.rankingInputRevision
+        await repository.refresh(.explore, force: true)
+        XCTAssertEqual(repository.collectionRevision(.explore), exploreVersion)
+        XCTAssertEqual(repository.rankingInputRevision, inputVersion)
+        try repository.store([(item("ranked"), [])], in: .forYou, signature: "sig")
+        try repository.store([(item("author"), [])], in: .forYouAuthors, signature: "authors")
+        XCTAssertEqual(repository.rankingInputRevision, inputVersion, "Output must not restart its own producer")
+        XCTAssertEqual(repository.collectionRevision(.explore), exploreVersion)
+        XCTAssertEqual(repository.items(.forYou).map(\.id), ["ranked"])
+        try repository.store([(item("replacement"), [])], in: .forYou, signature: "next")
+        XCTAssertEqual(repository.items(.forYou).map(\.id), ["replacement"], "Value cache invalidates after a write")
+        await transport.set(.explore, [row("OL2W")])
+        await repository.refresh(.explore, force: true)
+        XCTAssertGreaterThan(repository.rankingInputRevision, inputVersion)
+        XCTAssertEqual(repository.items(.explore).map(\.id), ["openlibrary:OL2W"])
+    }
+
     func testLocalRankingsAreStoredWithSignatureAndReasons() throws {
         let (container, repository) = try makeRepository(FakeDiscoveryTransport())
         defer { withExtendedLifetime(container) {} }
@@ -364,5 +388,108 @@ final class DiscoveryRecommenderTests: XCTestCase {
         let unit = DiscoverySeed.unit(42, "key")
         XCTAssertTrue((0..<1).contains(unit))
         XCTAssertEqual(unit, DiscoverySeed.unit(42, "key"))
+    }
+}
+
+@MainActor
+final class DiscoveryFeedWorkerTests: XCTestCase {
+    func testExploreCachePreservesOrderAndInvalidatesForChangedSubjectsAndSeed() async throws {
+        let worker = DiscoveryFeedWorker()
+        let pool = (0..<40).map { item("book\($0)", author: "Author \($0)", subjects: ["Fantasy"], facet: "fantasy") }
+        let expected = DiscoveryExploreOrder.order(pool, seed: 4)
+        let first = try await worker.explore(pool, seed: 4)
+        let cached = try await worker.explore(pool, seed: 4)
+        XCTAssertEqual(first, expected)
+        XCTAssertEqual(cached, expected)
+        var changed = pool
+        changed[0] = item("book0", subjects: ["Juvenile fiction"], facet: "fantasy")
+        let updated = try await worker.explore(changed, seed: 4)
+        XCTAssertFalse(updated.contains { $0.id == "book0" })
+        let reseeded = try await worker.explore(pool, seed: 8)
+        XCTAssertEqual(reseeded, DiscoveryExploreOrder.order(pool, seed: 8))
+    }
+
+    func testCancelledPreparationCannotReplaceCachedResults() async throws {
+        let worker = DiscoveryFeedWorker()
+        let pool = [item("one", subjects: ["History"])]
+        let expected = try await worker.explore(pool, seed: 1)
+        let cancelled = Task {
+            try Task.checkCancellation()
+            return try await worker.explore([item("other", subjects: ["Fantasy"])], seed: 2)
+        }
+        cancelled.cancel()
+        do { _ = try await cancelled.value; XCTFail("Cancelled work must throw") }
+        catch is CancellationError { }
+        let unchanged = try await worker.explore(pool, seed: 1)
+        XCTAssertEqual(unchanged, expected)
+    }
+
+    func testTastePreservesRatingsFavoritesAndWithdrawalWithoutReviewHTMLWork() async throws {
+        let worker = DiscoveryFeedWorker()
+        let user = UUID()
+        let book = Book(title: "Favorite", author: "Writer", isbn: "123", googleBooksVolumeId: "fav")
+        book.storyGraphData = try JSONEncoder().encode(StoryGraphReadingData(sourceKey: "fixture", status: "read",
+            dateAdded: nil, lastDateRead: nil, periods: [], readCount: 1, rating: 4.3,
+            format: "", moods: [], pace: "", tags: [], owned: nil, originalFields: ["Review": "<p>Imported review</p>"]))
+        book.cachedStatsClassification = try JSONEncoder().encode(BookCatalogService.ClassificationEvidence(
+            categories: ["Fiction / Fantasy"], source: "google"))
+        let favorite = ReaderFavorite(book: book)
+        let profile = try JSONEncoder().encode(ReaderPublicContent(stats: .init(), sentence: "", favorites: [favorite]))
+        let draft = try ReaderReviewDraft(userID: user, localBookID: book.id, content: .init())
+        let imported = try await worker.taste([DiscoveryTasteInput(book: book, draft: draft)], profileData: profile)
+        XCTAssertEqual(imported.first?.rating, 4.25)
+        XCTAssertEqual(imported.first?.favoriteRank, 0)
+        XCTAssertEqual(imported.first?.genres, ["Fantasy"])
+        var saved = ReaderReviewContent(); saved.rating = 20
+        draft.remoteData = try JSONEncoder().encode(RemoteReaderReview(workID: UUID(), bookID: UUID(), revision: 1, content: saved, deleted: false))
+        let remote = try await worker.taste([DiscoveryTasteInput(book: book, draft: draft)], profileData: profile)
+        XCTAssertEqual(remote.first?.rating, 5)
+        draft.pendingData = try JSONEncoder().encode(ReaderReviewMutation(expectedUserID: user, operationID: UUID(), bookID: UUID(), expectedRevision: 1, content: saved, deleted: true))
+        let withdrawn = try await worker.taste([DiscoveryTasteInput(book: book, draft: draft)], profileData: profile)
+        XCTAssertNil(withdrawn.first?.rating, "Withdrawal must not resurrect an imported rating")
+        book.cachedStatsClassification = try JSONEncoder().encode(BookCatalogService.ClassificationEvidence(categories: ["History"], source: "google"))
+        let reclassified = try await worker.taste([DiscoveryTasteInput(book: book, draft: nil)], profileData: nil)
+        XCTAssertEqual(reclassified.first?.genres, ["History"])
+        let removed = try await worker.taste([], profileData: profile)
+        XCTAssertEqual(removed.first?.catalogID, "fav", "A shelf-only favorite still informs taste")
+        XCTAssertEqual(removed.first?.favoriteRank, 0)
+    }
+
+    func testWorkerRankingMatchesExistingRulesAndSkipsUnchangedInputs() async throws {
+        let worker = DiscoveryFeedWorker()
+        let items = (0..<50).map { item("book\($0)", author: "Writer \($0)", subjects: [$0.isMultiple(of: 2) ? "Fantasy" : "History"], facet: "explore") }
+        let pools = [DiscoveryPool(collection: .explore, items: items, fetchedAt: Date(timeIntervalSince1970: 100))]
+        let taste = [DiscoveryTasteBook(catalogID: "book0", title: "Title book0", author: "Writer 0", genres: ["Fantasy"], status: "read", rating: 5)]
+        let result = try await worker.rank(taste: taste, pools: pools, seed: 9, previousSignature: nil, hasCachedResults: false)
+        let ranking = try XCTUnwrap(result)
+        let expected = DiscoveryRecommender.recommend(books: taste,
+            candidates: items.map { DiscoveryCandidate(item: $0, collections: ["explore"]) }.sorted { $0.item.id < $1.item.id }, seed: 9)
+        XCTAssertEqual(ranking.recommendations.map(\.item.id), expected.map(\.item.id))
+        let skipped = try await worker.rank(taste: taste, pools: pools, seed: 9, previousSignature: ranking.signature, hasCachedResults: true)
+        XCTAssertNil(skipped)
+        let regenerated = try await worker.rank(taste: taste, pools: pools, seed: 9, previousSignature: ranking.signature, hasCachedResults: false)
+        XCTAssertNotNil(regenerated, "Missing cached results must be rebuilt")
+    }
+
+    func testLargeLibraryAndDiscoveryWarmPreparation() async throws {
+        let worker = DiscoveryFeedWorker()
+        for count in [300, 1_000, 3_000] {
+            let inputs = (0..<count).map { index in
+                DiscoveryTasteInput(book: Book(title: "Own \(index)", author: "Author \(index)", isbn: "", googleBooksVolumeId: "own\(index)"), draft: nil)
+            }
+            let start = ContinuousClock.now
+            let taste = try await worker.taste(inputs, profileData: nil)
+            XCTAssertEqual(taste.count, count)
+            let cached = try await worker.taste(inputs, profileData: nil)
+            XCTAssertEqual(cached, taste)
+            print("Discovery taste: \(count) books, cold+warm \(start.duration(to: .now))")
+        }
+        let pool = (0..<1_000).map { item("large\($0)", author: "Writer \($0)", subjects: ["Fantasy fiction", "Magic", "Adventure stories"], facet: "fantasy") }
+        let first = try await worker.explore(pool, seed: 1)
+        let warmStart = ContinuousClock.now
+        let cached = try await worker.explore(pool, seed: 1)
+        XCTAssertEqual(cached, first)
+        XCTAssertEqual(cached.count, 1_000)
+        print("Discovery Explore: 1000 cached entries \(warmStart.duration(to: .now))")
     }
 }

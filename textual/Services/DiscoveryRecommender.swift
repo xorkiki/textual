@@ -22,11 +22,11 @@ struct DiscoveryCandidate: Sendable {
     let genres: Set<String>
     let collections: Set<String>
 
-    init(item: DiscoverItem, collections: Set<String>) {
+    init(item: DiscoverItem, collections: Set<String>, genres: Set<String>? = nil) {
         self.item = item
         self.collections = collections
         // Google categories and Open Library subjects follow the app-wide taxonomy rules.
-        genres = GenreTaxonomy.normalized(item.subjects, isOpenLibrary: item.catalogID.hasPrefix("openlibrary:")
+        self.genres = genres ?? GenreTaxonomy.normalized(item.subjects, isOpenLibrary: item.catalogID.hasPrefix("openlibrary:")
                                            || item.facet != nil)
     }
 }
@@ -95,6 +95,7 @@ enum DiscoveryRecommender {
     static func profile(_ books: [DiscoveryTasteBook]) -> Profile {
         var profile = Profile()
         for book in books {
+            if Task.isCancelled { return profile }
             if let id = book.catalogID, !id.isEmpty { profile.archivedCatalogIDs.insert(id) }
             for isbn in book.isbns { if let value = StoryGraphImporter.normalizedISBN(isbn) { profile.archivedISBNs.insert(value) } }
             if let work = DiscoveryIdentity.workKey(title: book.title, author: book.author) { profile.archivedWorks.insert(work) }
@@ -145,6 +146,7 @@ enum DiscoveryRecommender {
         var seen = Set<String>()
         var seenWorks = Set<String>()
         let scored = candidates.compactMap { candidate -> Scored? in
+            guard !Task.isCancelled else { return nil }
             let item = candidate.item
             guard seen.insert(item.catalogID).inserted, !profile.isArchived(item) else { return nil }
             if let work = DiscoveryIdentity.workKey(title: item.title, author: item.author),
@@ -173,6 +175,7 @@ enum DiscoveryRecommender {
         var result: [DiscoveryRecommendation] = []
         var p = 0, e = 0
         while result.count < limit, p < personal.count || e < exploratory.count {
+            if Task.isCancelled { return [] }
             let wantsPersonal = Double(p) < Double(result.count + 1) * share
             let pick: Scored
             let isPersonal: Bool
@@ -195,6 +198,7 @@ enum DiscoveryRecommender {
         var picked: [Scored] = []
         var authorCounts: [String: Int] = [:]
         while picked.count < limit, !pool.isEmpty {
+            if Task.isCancelled { return [] }
             let recent = picked.suffix(3).map(\.candidate.genres)
             var bestIndex = 0
             var bestValue = -Double.infinity
@@ -221,15 +225,16 @@ enum DiscoveryRecommender {
 /// Explore favors breadth: subject, era, and origin pools are interleaved in a seeded
 /// order that changes between sessions but stays stable while browsing and paging.
 enum DiscoveryExploreOrder {
-    static func order(_ items: [DiscoverItem], seed: UInt64, includeChildrens: Bool = false) -> [DiscoverItem] {
+    static func order(_ items: [DiscoverItem], seed: UInt64, includeChildrens: Bool = false,
+                      genres: ((DiscoverItem) -> Set<String>)? = nil) -> [DiscoverItem] {
         var seen = Set<String>()
         var seenWorks = Set<String>()
         let unique = items.filter { item in
-            guard seen.insert(item.catalogID).inserted else { return false }
+            guard !Task.isCancelled, seen.insert(item.catalogID).inserted else { return false }
             if let work = DiscoveryIdentity.workKey(title: item.title, author: item.author),
                !seenWorks.insert(work).inserted { return false }
             if !includeChildrens,
-               !GenreTaxonomy.normalized(item.subjects, isOpenLibrary: true).isDisjoint(with: DiscoveryRecommender.childrensGenres) { return false }
+               !(genres?(item) ?? GenreTaxonomy.normalized(item.subjects, isOpenLibrary: true)).isDisjoint(with: DiscoveryRecommender.childrensGenres) { return false }
             return true
         }
         var pools = Dictionary(grouping: unique) { $0.facet ?? "other" }.mapValues { pool in
@@ -244,6 +249,7 @@ enum DiscoveryExploreOrder {
         var result: [DiscoverItem] = []
         var recentAuthors: [String] = []
         while pools.values.contains(where: { !$0.isEmpty }) {
+            if Task.isCancelled { return [] }
             for facet in facets {
                 guard var pool = pools[facet], !pool.isEmpty else { continue }
                 // Prefer the next book whose author hasn't appeared in the last dozen picks.

@@ -182,24 +182,11 @@ extension EnvironmentValues {
 struct ReadingLibraryObserver: View {
     let cache: ReadingLibraryCache
     @Query(filter: #Predicate<Book> { !$0.isRemovedFromLibrary }, sort: \Book.title) private var books: [Book]
-    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         let inputs = books.map(ReadingBookInput.init)
         Color.clear.frame(width: 0, height: 0).accessibilityHidden(true)
             .task(id: inputs) { await cache.update(inputs) }
-            .task(id: WarmKey(books: inputs.map { .init(id: $0.id, title: $0.title, author: $0.author, isbn: $0.isbn) }, active: scenePhase == .active)) {
-                guard scenePhase == .active else { return }
-                // Give the initial screen and explicit user requests a head start.
-                do { try await Task.sleep(for: .seconds(2)) } catch { return }
-                await StatsMetadataCache.warm(books)
-            }
-    }
-
-    private struct WarmKey: Equatable {
-        struct BookKey: Equatable { let id: UUID; let title: String; let author: String; let isbn: String }
-        let books: [BookKey]
-        let active: Bool
     }
 }
 

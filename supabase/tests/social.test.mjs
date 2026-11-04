@@ -329,9 +329,18 @@ try {
     captured.friends_page = listed;
     captured.settings = await t.settings(A);
     eq(listed.friends[0].relationship.request_id, abRequest, 'the list carries the request ID needed to remove');
+    const publicFriends = await t.one('select public.textual_read_profile_friends($1, $2, $3) r', ['ada_reads', null, 1]);
+    eq(publicFriends.friends.map(f => f.username), ['bea'], 'public profile friends preview is paged');
+    eq(publicFriends.next, 'bea', 'public profile friends cursor is stable');
+    eq((await t.one('select public.textual_read_profile_friends($1, $2, $3) r', ['ada_reads', publicFriends.next, 1]))
+        .friends.map(f => f.username), ['dot_com'], 'the next public friends page is complete');
     await as(db, C);
     eq((await t.one('select public.textual_list_friends() r')).friends, [], 'an unrelated reader sees none of A’s friends');
-    for (const table of ['textual_friendships', 'textual_activity', 'textual_social_operations', 'textual_social_rate_limits']) {
+    eq((await t.one('select public.textual_read_profile_friends($1) r', ['ada_reads'])).friends
+        .map(f => [f.username, f.relationship.state]), [['bea', 'none'], ['dot_com', 'none']],
+        'visitor sees accepted friends and only their own relationship to each');
+    for (const table of ['textual_friendships', 'textual_activity', 'textual_social_operations',
+                         'textual_social_rate_limits', 'textual_profile_genres']) {
         await as(db, A);
         await rejects(() => db.query(`select * from public.${table}`), '42501', `${table} has no direct client access`);
     }
@@ -399,6 +408,25 @@ try {
     captured.public_profile = await t.profile(C, 'bea');
     captured.books_page = await t.books(C, 'bea', 'rereads', null, 2);
 
+    const mapped = [
+        { entry_id: fullRead.books[0].entry_id, genres: ['Fantasy'] },
+        { entry_id: fullRead.books[1].entry_id, genres: ['Fantasy', 'Romance'] },
+        { entry_id: fullRead.books[2].entry_id, genres: [] }
+    ];
+    await as(db, B);
+    eq(await t.one('select public.textual_publish_profile_genres($1, $2::jsonb) r', [B, JSON.stringify(mapped)]), true,
+        'owner can publish per-book genres');
+    await as(db, C);
+    eq((await t.one('select public.textual_read_profile_genre_books($1, $2) r', ['bea', 'Fantasy'])).books
+        .map(b => b.entry_id), mapped.slice(0, 2).map(b => b.entry_id), 'genre drilldown shows only matching covers');
+    eq((await t.one('select public.textual_read_profile_genre_books($1, $2) r', ['bea', 'Unclassified'])).books
+        .map(b => b.entry_id), [mapped[2].entry_id], 'unclassified drilldown includes uncategorized books');
+    await rejects(() => t.one('select public.textual_publish_profile_genres($1, $2::jsonb) r', [C, JSON.stringify(mapped)]),
+        '22023', 'a reader cannot publish another reader’s book IDs');
+    await as(db, A);
+    await rejects(() => t.one('select public.textual_publish_profile_genres($1, $2::jsonb) r', [B, JSON.stringify(mapped)]),
+        '42501', 'a reader cannot publish another reader’s genres');
+
     await t.setSettings(B, { rereadsVisible: false });
     const noRereads = (await t.profile(C, 'bea')).card;
     eq(noRereads.books_read, { visible: true, count: 77, books: 77 }, 'hidden rereads: Books Read counts distinct books');
@@ -411,6 +439,8 @@ try {
     const hidden = (await t.profile(A, 'bea')).card;
     eq(hidden, { books_read: { visible: false }, genres: { visible: false }, rereads: { visible: false } }, 'friends are denied disabled details too');
     await rejects(() => t.books(A, 'bea', 'read'), '42501', 'friends cannot page a hidden list');
+    await rejects(() => t.one('select public.textual_read_profile_genre_books($1, $2) r', ['bea', 'Fantasy']),
+        '42501', 'friends cannot browse a hidden genre');
     eq((await t.profile(B, 'bea')).card.books_read.count, 93, 'owner access is preserved while hidden');
     eq((await t.allBooks(B, 'bea', 'read')).books.length, 77, 'owner can still list');
     await t.setSettings(B, { booksReadVisible: true, genresVisible: true, rereadsVisible: true });
@@ -674,7 +704,8 @@ try {
 
     // ---------------- Signed-out callers and grants ----------------
     const exposed = ['textual_social_settings', 'textual_update_social_settings', 'textual_search_readers', 'textual_update_friendship',
-        'textual_list_friends', 'textual_read_public_profile', 'textual_read_profile_books', 'textual_read_feed', 'textual_read_friend_discovery'];
+        'textual_list_friends', 'textual_read_public_profile', 'textual_read_profile_books', 'textual_read_feed', 'textual_read_friend_discovery',
+        'textual_read_profile_friends', 'textual_publish_profile_genres', 'textual_read_profile_genre_books'];
     const signedOutCalls = [
         ['select public.textual_social_settings()', []],
         ['select public.textual_update_social_settings($1, $2::jsonb)', [A, '{}']],
@@ -683,6 +714,9 @@ try {
         ['select public.textual_list_friends()', []],
         ['select public.textual_read_public_profile($1)', ['bea']],
         ['select public.textual_read_profile_books($1, $2)', ['bea', 'read']],
+        ['select public.textual_read_profile_friends($1)', ['bea']],
+        ['select public.textual_publish_profile_genres($1, $2::jsonb)', [A, '[]']],
+        ['select public.textual_read_profile_genre_books($1, $2)', ['bea', 'Fantasy']],
         ['select public.textual_read_feed()', []],
         ['select public.textual_read_friend_discovery()', []],
         ['select public.textual_read_reader_profile($1)', ['bea']],
@@ -712,7 +746,8 @@ try {
     await db.query('delete from auth.users where id = $1', [B]);
     eq((await db.query(`select (select count(*) from public.textual_activity where actor_id = $1)::int a,
         (select count(*) from public.textual_friendships where user_low = $1 or user_high = $1)::int f,
-        (select count(*) from public.textual_social_operations where user_id = $1)::int o`, [B])).rows[0], { a: 0, f: 0, o: 0 },
+        (select count(*) from public.textual_social_operations where user_id = $1)::int o,
+        (select count(*) from public.textual_profile_genres where user_id = $1)::int g`, [B])).rows[0], { a: 0, f: 0, o: 0, g: 0 },
         'account deletion removes social rows');
 
     await other.end();

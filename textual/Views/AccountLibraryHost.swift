@@ -92,6 +92,7 @@ final class AccountLibraryStore {
     @ObservationIgnored private let defaults: UserDefaults
 
     static func deleteLocalData(for userID: UUID, projectHost: String? = nil) {
+        UserDefaults.standard.removeObject(forKey: "textual.social.lastSeenFeed.\(userID.uuidString)")
         guard let base = try? FileManager.default.url(for: .applicationSupportDirectory,
                                                        in: .userDomainMask,
                                                        appropriateFor: nil,

@@ -33,6 +33,22 @@ final class DiscoveryRepository {
     private(set) var failed: Set<DiscoveryCollection> = []
     /// Increments whenever a collection is rewritten, so dependents can re-rank.
     private(set) var revision = 0
+    /// For You's own output and author lookup must not restart their producer.
+    private(set) var rankingInputRevision = 0
+    private(set) var collectionRevisions: [DiscoveryCollection: Int] = [:]
+    @ObservationIgnored let feedWorker = DiscoveryFeedWorker()
+    @ObservationIgnored private var itemCache: [DiscoveryCollection: [DiscoverItem]] = [:]
+
+    func collectionRevision(_ collection: DiscoveryCollection) -> Int {
+        collectionRevisions[collection, default: 0]
+    }
+
+    private func didChange(_ collection: DiscoveryCollection) {
+        itemCache[collection] = nil
+        collectionRevisions[collection, default: 0] += 1
+        if DiscoveryCollection.remote.contains(collection) { rankingInputRevision += 1 }
+        revision += 1
+    }
 
     @ObservationIgnored private let context: ModelContext
     @ObservationIgnored private let transport: any DiscoveryTransport
@@ -47,7 +63,7 @@ final class DiscoveryRepository {
         self.now = now
     }
 
-    func stop() { active = false }
+    func stop() { active = false; itemCache.removeAll() }
 
     /// Refreshes every server collection that is stale (or all, when forced).
     func refreshAll(force: Bool = false) async {
@@ -85,7 +101,7 @@ final class DiscoveryRepository {
             let items = rows.compactMap(\.item)
             // A collection that hasn't been filled yet is a retry, not a fresh empty result.
             guard !items.isEmpty else { throw DiscoveryRefreshError.empty }
-            try replace(collection, with: items)
+            let changed = try replace(collection, with: items)
             let saved = self.state(collection) ?? insertState(collection)
             saved.fetchedAt = now()
             saved.serverRefreshedAt = refreshedAt.flatMap(DiscoveryDate.parse)
@@ -94,7 +110,7 @@ final class DiscoveryRepository {
             saved.failureCount = 0
             try context.save()
             failed.remove(collection)
-            revision += 1
+            if changed { didChange(collection) }
         } catch {
             guard active, !(error is CancellationError) else { return }
             context.rollback()
@@ -110,12 +126,12 @@ final class DiscoveryRepository {
     func store(_ items: [(item: DiscoverItem, reasons: [String])], in collection: DiscoveryCollection,
                signature: String) throws {
         guard active, !DiscoveryCollection.remote.contains(collection) else { return }
-        try replace(collection, with: items.map(\.item), reasons: items.map(\.reasons))
+        let changed = try replace(collection, with: items.map(\.item), reasons: items.map(\.reasons))
         let saved = state(collection) ?? insertState(collection)
         saved.fetchedAt = now()
         saved.inputSignature = signature
         try context.save()
-        revision += 1
+        if changed { didChange(collection) }
     }
 
     func state(_ collection: DiscoveryCollection) -> DiscoveryCollectionState? {
@@ -127,11 +143,15 @@ final class DiscoveryRepository {
 
     /// Cached rows in collection order, without provider content past its cache limit.
     func items(_ collection: DiscoveryCollection) -> [DiscoverItem] {
-        let name = collection.rawValue
-        let descriptor = FetchDescriptor<DiscoveryCacheEntry>(predicate: #Predicate { $0.collection == name },
-                                                              sortBy: [SortDescriptor(\.position)])
+        if itemCache[collection] == nil {
+            let name = collection.rawValue
+            let descriptor = FetchDescriptor<DiscoveryCacheEntry>(predicate: #Predicate { $0.collection == name },
+                                                                  sortBy: [SortDescriptor(\.position)])
+            guard let rows = try? context.fetch(descriptor) else { return [] }
+            itemCache[collection] = rows.map(\.item)
+        }
         let date = now()
-        return ((try? context.fetch(descriptor)) ?? []).map(\.item).filter { $0.isVisible(at: date) }
+        return (itemCache[collection] ?? []).filter { $0.isVisible(at: date) }
     }
 
     func entries(_ collection: DiscoveryCollection) -> [DiscoveryCacheEntry] {
@@ -148,20 +168,26 @@ final class DiscoveryRepository {
     }
 
     /// Updates rows in place (unique keys make delete-then-insert unsafe) and removes leftovers.
-    private func replace(_ collection: DiscoveryCollection, with items: [DiscoverItem], reasons: [[String]] = []) throws {
+    private func replace(_ collection: DiscoveryCollection, with items: [DiscoverItem], reasons: [[String]] = []) throws -> Bool {
+        var changed = false
         var existing = Dictionary(entries(collection).map { ($0.key, $0) }, uniquingKeysWith: { first, _ in first })
         var position = 0
         var seen = Set<String>()
         for (index, item) in items.enumerated() where seen.insert(item.catalogID).inserted {
             let why = index < reasons.count ? reasons[index] : []
             if let entry = existing.removeValue(forKey: DiscoveryCacheEntry.key(collection, item.catalogID)) {
-                entry.update(position: position, item: item, reasons: why)
+                if entry.position != position || entry.item != item || entry.reasons != why {
+                    entry.update(position: position, item: item, reasons: why)
+                    changed = true
+                }
             } else {
                 context.insert(DiscoveryCacheEntry(collection: collection, position: position, item: item, reasons: why))
+                changed = true
             }
             position += 1
         }
         for entry in existing.values { context.delete(entry) }
+        return changed || !existing.isEmpty
     }
 
     private func insertState(_ collection: DiscoveryCollection) -> DiscoveryCollectionState {

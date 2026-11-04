@@ -53,9 +53,17 @@ enum StatsMetadataCache {
         return now.timeIntervalSince(checked) >= 86_400
     }
 
-    static func warm(_ books: [Book], service: BookCatalogService = .shared) async {
+    static func warm(_ books: [Book], limit: Int = 8, service: BookCatalogService = .shared) async {
+        guard limit > 0, !Task.isCancelled else { return }
         let googleConfigured = await service.hasGoogleAPIKey
-        let ordered = prioritizedForWarmup(books)
+        guard !Task.isCancelled else { return }
+        let ordered = Array(prioritizedForWarmup(books).filter { book in
+            guard !book.isRemovedFromLibrary else { return false }
+            return needsClassification(book, googleConfigured: googleConfigured)
+                || needsLookup(hasCategories: !genres(book).isEmpty, hasPages: pageCount(book) != nil,
+                    isAudio: book.importedReading?.format.lowercased() == "audio",
+                    checkedAt: book.statsMetadataVersion == 4 ? book.statsMetadataCheckedAt : nil)
+        }.prefix(limit))
         await BookCatalogService.$isBackgroundLookup.withValue(true) {
             await warmBatches(ordered, service: service, googleConfigured: googleConfigured)
         }

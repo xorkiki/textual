@@ -64,15 +64,18 @@ struct GenreTiles {
 
 struct GenreStatsChart: View {
     let genres: [GenreStat]
+    var showsHeading = true
     /// Nil for a visitor's read-only breakdown: rows show values without opening books.
     let onSelect: ((String) -> Void)?
 
     var body: some View {
         let values = genres
         VStack(alignment: .leading, spacing: 24) {
-            Text("Genres")
-                .font(.designSystem(.sectionHeading))
-                .foregroundStyle(Color.paper)
+            if showsHeading {
+                Text("Genres")
+                    .font(.designSystem(.sectionHeading))
+                    .foregroundStyle(Color.paper)
+            }
             if values.isEmpty {
                 Text("No genres available for this selection yet.")
                     .font(.designSystem(.bodySmall))

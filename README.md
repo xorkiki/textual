@@ -454,6 +454,11 @@ remotely until the app refreshes.
 3. Verify with a second account: send and accept a request, save a quote, and check the
    friend's Feed and Discover → Friends.
 
+The profile follow-ups `014_profile_friends.sql` and `015_profile_genre_books.sql` were applied
+to the existing Textual production project on October 16, 2026 and are recorded in its Supabase
+migration history. Do not rerun them there. The friends endpoint lists accepted relationships;
+the genre evidence table has RLS enabled and no direct client access.
+
 Recovery: revoke `execute` on the social read functions to disable social reads without
 touching library data. Roll forward with a new migration; don't edit applied ones. Architecture,
 permission matrix, and activity rules: [docs/social-architecture.md](docs/social-architecture.md).

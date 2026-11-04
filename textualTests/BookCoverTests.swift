@@ -211,7 +211,7 @@ struct BookCoverTests {
         #expect(BookCoverURL.normalized("https://user:secret@example.com/cover.jpg") == nil)
     }
 
-    @Test func repairedCoverPersistsWithoutChangingTheEditionOrSyncOutbox() throws {
+    @Test func repairedCoverPersistsWithoutChangingTheEditionOrSyncOutbox() async throws {
         let container = try ModelContainer(for: Book.self, Tag.self, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
         let context = ModelContext(container)
         let book = Book(title: identity.title, author: identity.author, isbn: identity.isbn, coverURL: broken, googleBooksVolumeId: "storygraph:original")
@@ -219,6 +219,7 @@ struct BookCoverTests {
         try context.save()
         let operation = book.pendingOperationID
         book.rememberCover(replacement)
+        try await Task.sleep(for: .milliseconds(450))
         let reopened = try #require(ModelContext(container).fetch(FetchDescriptor<Book>()).first)
         #expect(reopened.resolvedCoverURL == replacement)
         #expect(reopened.coverURL == broken)

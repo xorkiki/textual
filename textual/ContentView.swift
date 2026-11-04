@@ -45,33 +45,11 @@ struct TextualTabView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.socialStore) private var social
     @State private var readingLibrary = ReadingLibraryCache()
+    @State private var showOwnProfile = false
+    @State private var openedReader: ReaderRoute?
 
     var body: some View {
-        ZStack(alignment: .bottom) {
-            // The custom bar owns all six destinations. A native TabView adds a
-            // More navigation stack after five tabs, including its own header/back button.
-            // Keep visited pages mounted so their navigation and filters survive switching.
-            ZStack {
-                ForEach(TextualTab.allCases) { tab in
-                    if tab == selectedTab || visitedTabs.contains(tab) {
-                        destination(for: tab)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .opacity(tab == selectedTab ? 1 : 0)
-                            .allowsHitTesting(tab == selectedTab)
-                            .accessibilityHidden(tab != selectedTab)
-                            .zIndex(tab == selectedTab ? 1 : 0)
-                    }
-                }
-            }
-
-            TextualBottomBar(selection: $selectedTab)
-                .environment(\.readerShelfDrag, selectedTab == .library ? queueDrag : shelfDrag)
-                .frame(maxWidth: 440)
-                .padding(.horizontal, TextualNavigationLayout.outerPadding)
-                .padding(.bottom, TextualNavigationLayout.bottomPadding)
-                .frame(maxWidth: .infinity)
-                .textualChromeBackground(edge: .bottom, fadeLength: 36)
-        }
+        tabShell
         // Keep the compact footer at the physical bottom edge without counting
         // the home-indicator safe area twice. Keyboard avoidance stays on.
         .ignoresSafeArea(.container, edges: .bottom)
@@ -84,17 +62,51 @@ struct TextualTabView: View {
         }
         .onChange(of: scenePhase) { _, phase in
             if phase != .active { shelfDrag.cancel(); queueDrag.cancel() }
-            // Revalidate friend content and privacy settings on every return to the app.
             if phase == .active { Task { await social?.revalidate() } }
         }
-        // Settings first: new actions can only be shared once sharing is known to be on.
         .task { await social?.settings.refresh() }
         .onDisappear { shelfDrag.cancel(); queueDrag.cancel() }
         .onOpenURL { url in
-            if ReaderProfileRoute.username(url) != nil { selectedTab = .profile }
+            if let username = ReaderProfileRoute.username(url) { openedReader = ReaderRoute(username: username) }
         }
+        .sheet(item: $openedReader) { route in
+            NavigationStack { PublicReaderProfileView(username: route.username) }
+                .preferredColorScheme(.dark)
+        }
+        .task { await social?.refreshIndicator() }
         .environment(\.readingLibrary, readingLibrary)
         .background { ReadingLibraryObserver(cache: readingLibrary) }
+        .background { ProfileGenrePublisher(cache: readingLibrary, social: social) }
+    }
+
+    private var tabShell: some View {
+        ZStack(alignment: .bottom) {
+            // The custom bar owns five destinations. The owner's profile lives in Menu.
+            // Keep visited pages mounted so their navigation and filters survive switching.
+            visitedPages
+            TextualBottomBar(selection: $selectedTab, hasSocialNotice: social?.hasSocialNotice == true)
+                .environment(\.readerShelfDrag, selectedTab == .library ? queueDrag : shelfDrag)
+                .frame(maxWidth: 440)
+                .padding(.horizontal, TextualNavigationLayout.outerPadding)
+                .padding(.bottom, TextualNavigationLayout.bottomPadding)
+                .frame(maxWidth: .infinity)
+                .textualChromeBackground(edge: .bottom, fadeLength: 36)
+        }
+    }
+
+    private var visitedPages: some View {
+        ZStack {
+            ForEach(TextualTab.allCases) { tab in
+                if tab == selectedTab || visitedTabs.contains(tab) {
+                    destination(for: tab)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .opacity(tab == selectedTab ? 1 : 0)
+                        .allowsHitTesting(tab == selectedTab)
+                        .accessibilityHidden(tab != selectedTab)
+                        .zIndex(tab == selectedTab ? 1 : 0)
+                }
+            }
+        }
     }
 
     @ViewBuilder
@@ -107,11 +119,9 @@ struct TextualTabView: View {
         case .menu:
             TextualMenuPage(repository: repository, account: account,
                             legacyBookCount: legacyBookCount, importLegacy: importLegacy,
-                            openArchive: { selectedTab = .library })
+                            openArchive: { selectedTab = .library }, showOwnProfile: $showOwnProfile)
         case .stats:
-            TextualStatsPage()
-        case .profile:
-            ReaderProfileView(account: account)
+            TextualStatsPage(isActive: selectedTab == .stats)
         case .home:
             DiscoverView(repository: repository, isActive: selectedTab == .home,
                          openCommunity: { selectedTab = .community })
@@ -121,8 +131,51 @@ struct TextualTabView: View {
     }
 }
 
+/// Publish known book genres as the account library changes, whether or not the
+/// owner visits Profile. This observer is isolated from tab layout and debounced
+/// so cover metadata/import bursts never stall navigation or spam the server.
+private struct ProfileGenrePublisher: View {
+    let cache: ReadingLibraryCache
+    let social: SocialStore?
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var activation = 0
+
+    private struct Key: Equatable {
+        let revision: Int
+        let visible: Bool
+        let activation: Int
+    }
+
+    var body: some View {
+        Color.clear.frame(width: 0, height: 0).accessibilityHidden(true)
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active { activation += 1 }
+            }
+            .task(id: Key(revision: cache.snapshot.revision,
+                          visible: social?.settings.settings?.genresVisible == true,
+                          activation: activation)) {
+                guard cache.isReady, social?.settings.settings?.genresVisible == true else { return }
+                do { try await Task.sleep(for: .seconds(1)) } catch { return }
+                let entries = cache.snapshot.entries.compactMap { entry -> ProfileGenreEntry? in
+                    guard let reading = entry.reading,
+                          ReadingStatsFilter.completedCount(reading) > 0 else { return nil }
+                    return ProfileGenreEntry(entryID: entry.id,
+                        genres: Array(Set(entry.genres.map { String($0.prefix(80)) })).sorted())
+                }.sorted { $0.entryID.uuidString < $1.entryID.uuidString }
+                for retryDelay in [0, 3, 12] {
+                    if retryDelay > 0 {
+                        do { try await Task.sleep(for: .seconds(retryDelay)) } catch { return }
+                    }
+                    guard !Task.isCancelled else { return }
+                    if await social?.publishProfileGenres(entries) == true { return }
+                }
+            }
+    }
+}
+
 /// Filters stay local to this account's Stats page; years follow the imported history.
 private struct TextualStatsPage: View {
+    let isActive: Bool
     @Query(filter: #Predicate<Book> { !$0.isRemovedFromLibrary }) private var books: [Book]
     @State private var category: StatsCategory = .read
     @State private var selectedYear: Int? = nil
@@ -186,6 +239,10 @@ private struct TextualStatsPage: View {
             .onChange(of: recordedYears) { _, years in
                 if readingLibrary?.isReady == true, let selectedYear, !years.contains(selectedYear) { self.selectedYear = nil }
             }
+            .task(id: isActive) {
+                guard isActive else { return }
+                await StatsMetadataCache.warm(books, limit: 8)
+            }
         }
     }
 
@@ -193,13 +250,18 @@ private struct TextualStatsPage: View {
 }
 
 enum TextualTab: String, CaseIterable, Identifiable {
-    case profile, library, stats, home, community, menu
+    case library, stats, home, community, menu
 
     var id: String { rawValue }
-    var title: String { self == .library ? "My Archive" : rawValue.capitalized }
+    var title: String {
+        switch self {
+        case .library: return "My Archive"
+        case .community: return "Friends"
+        default: return rawValue.capitalized
+        }
+    }
     var icon: DesignSystemIcon {
         switch self {
-        case .profile: return .profile
         case .stats: return .stats
         case .library: return .archive
         case .home: return .home
@@ -212,6 +274,7 @@ enum TextualTab: String, CaseIterable, Identifiable {
 
 private struct TextualBottomBar: View {
     @Binding var selection: TextualTab
+    let hasSocialNotice: Bool
     @Environment(\.readerShelfDrag) private var shelfDrag
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private var dragging: Bool { shelfDrag?.isDragging == true }
@@ -279,6 +342,14 @@ private struct TextualBottomBar: View {
 
     private func tabIcon(_ tab: TextualTab) -> some View {
         DesignSystemIconView(tab.icon)
+            .overlay(alignment: .topTrailing) {
+                if tab == .community && hasSocialNotice {
+                    Circle().fill(Color.bloodletter)
+                        .frame(width: 7, height: 7)
+                        .offset(x: 3, y: -3)
+                        .accessibilityHidden(true)
+                }
+            }
     }
 
 }
@@ -290,6 +361,7 @@ private struct TextualMenuPage: View {
     let legacyBookCount: Int
     let importLegacy: (() async throws -> Void)?
     let openArchive: () -> Void
+    @Binding var showOwnProfile: Bool
     @State private var openArchiveAfterImport = false
     @State private var showImport = false
     @State private var showAccount = false
@@ -304,6 +376,9 @@ private struct TextualMenuPage: View {
                 Color.inkwell.ignoresSafeArea()
                 ScrollView {
                     LazyVStack(spacing: 0) {
+                        menuRow("My profile") { showOwnProfile = true }
+                            .accessibilityIdentifier("menu.profile")
+                        Divider().overlay(Color.velvet)
                         menuRow("Account") { showAccount = true }
                             .accessibilityIdentifier("menu.account")
                         Divider().overlay(Color.velvet)
@@ -322,6 +397,10 @@ private struct TextualMenuPage: View {
                 .scrollIndicators(.hidden)
             }
             .textualPageTitle("Menu")
+            .sheet(isPresented: $showOwnProfile) {
+                ReaderProfileView(account: account, isPresentedAsSheet: true)
+                    .preferredColorScheme(.dark)
+            }
             .sheet(isPresented: $showImport, onDismiss: {
                 if openArchiveAfterImport {
                     openArchiveAfterImport = false

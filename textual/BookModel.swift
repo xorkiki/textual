@@ -38,9 +38,14 @@ final class Book {
     var storyGraphData: Data? = nil
 
     @Transient private var readingHistoryCache = ReadingHistoryCache()
+    @Transient private var coverCandidateCache = CoverCandidateCache()
 
     var importedReading: StoryGraphReadingData? {
         readingHistoryCache.read(storyGraphData)
+    }
+
+    @MainActor var coverCandidates: [String] {
+        coverCandidateCache.read(resolved: resolvedCoverURL, original: coverURL, metadata: cachedCatalogMetadata)
     }
 
     // Account-local sync outbox. `id` stays stable even when a duplicate remote
@@ -156,5 +161,31 @@ final class ReadingHistoryCache {
         value = data.flatMap { try? JSONDecoder().decode(StoryGraphReadingData.self, from: $0) }
         hasValue = true
         return value
+    }
+}
+
+/// Catalog image metadata is relatively large and otherwise gets decoded every
+/// time SwiftUI rebuilds a visible cover. Raw-value comparison invalidates the
+/// memo safely after sync, metadata enrichment, or rollback.
+final class CoverCandidateCache {
+    private var lastResolved: String?
+    private var lastOriginal: String?
+    private var lastMetadata: Data?
+    private var hasValue = false
+    private var candidates: [String] = []
+
+    func read(resolved: String?, original: String, metadata: Data?) -> [String] {
+        if hasValue, lastResolved == resolved, lastOriginal == original, lastMetadata == metadata {
+            return candidates
+        }
+        let cached = metadata.flatMap {
+            try? JSONDecoder().decode(BookCatalogService.BookItem.self, from: $0)
+        }?.volumeInfo?.imageLinks
+        candidates = [resolved, original, cached?.thumbnail, cached?.smallThumbnail].compactMap { $0 }
+        lastResolved = resolved
+        lastOriginal = original
+        lastMetadata = metadata
+        hasValue = true
+        return candidates
     }
 }

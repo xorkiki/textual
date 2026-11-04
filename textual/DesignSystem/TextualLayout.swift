@@ -20,7 +20,6 @@ enum TextualNavigationLayout {
     static let itemHeight: CGFloat = TextualLayout.touchTarget
     static let innerPadding: CGFloat = 6
     static let outerPadding: CGFloat = TextualLayout.pageInset
-    static let bottomPadding: CGFloat = 12
+    static let bottomPadding: CGFloat = 24
     static var bottomExtent: CGFloat { itemHeight + innerPadding * 2 + bottomPadding }
 }
-

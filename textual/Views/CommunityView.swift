@@ -1,7 +1,7 @@
 import SwiftUI
 
 enum CommunityTab: String, TextualTabItem {
-    case friends, feed
+    case feed, friends
     var id: String { rawValue }
     var identifier: String { rawValue }
     var title: String { rawValue.capitalized }
@@ -12,7 +12,7 @@ enum CommunityTab: String, TextualTabItem {
 struct CommunityView: View {
     var isActive = true
     @Environment(\.socialStore) private var social
-    @State private var selection: CommunityTab? = .friends
+    @State private var selection: CommunityTab? = .feed
     @State private var query = ""
     @State private var openedBook: Book?
 
@@ -45,11 +45,21 @@ struct CommunityView: View {
         .task(id: isActive) {
             guard isActive else { return }
             await social?.reloadFriends()
-            if selection == .feed { await social?.openFeed() }
+            if selection == .feed {
+                await loadViewedFeed()
+            }
         }
         .onChange(of: selection) { _, tab in
-            if tab == .feed { Task { await social?.openFeed() } }
+            if tab == .feed {
+                Task { await loadViewedFeed() }
+            }
         }
+    }
+
+    private func loadViewedFeed() async {
+        if social?.hasUnreadFeed == true { await social?.refreshFeed() }
+        else { await social?.openFeed() }
+        if selection == .feed, social?.feedMessage == nil { social?.markFeedSeen() }
     }
 
     @ViewBuilder
@@ -87,8 +97,8 @@ private struct CommunityFriendsPage: View {
                         section("Requests") {
                             ForEach(social.incoming) { reader in
                                 SocialReaderRow(reader: reader) {
-                                    actionButton("Accept", .accept, reader)
-                                    actionButton("Decline", .decline, reader)
+                                    actionButton(.checkmark, "Accept", .accept, reader)
+                                    actionButton(.close, "Decline", .decline, reader)
                                 }
                             }
                         }
@@ -181,7 +191,10 @@ private struct CommunityFriendsPage: View {
             case .none:
                 Button(busy ? "Sending…" : "Add") { Task { await social.perform(.send, with: reader) } }
             case .incoming:
-                Button(busy ? "Sending…" : "Accept") { Task { await social.perform(.accept, with: reader) } }
+                Button { Task { await social.perform(.accept, with: reader) } } label: {
+                    DesignSystemIconView(.checkmark, size: TextualIconStyle.compact.size)
+                }
+                .accessibilityLabel(busy ? "Sending friend request" : "Accept friend request")
             case .outgoing:
                 Button(busy ? "Sending…" : "Requested") { confirmation = (.cancel, reader) }
             case .friends:
@@ -192,10 +205,13 @@ private struct CommunityFriendsPage: View {
         .accessibilityIdentifier("community.relationship.\(reader.username)")
     }
 
-    private func actionButton(_ title: String, _ action: FriendshipAction, _ reader: SocialReader) -> some View {
+    private func actionButton(_ icon: DesignSystemIcon, _ title: String, _ action: FriendshipAction, _ reader: SocialReader) -> some View {
         let busy = social.pending.contains(reader.userID)
-        return Button(busy ? "Sending…" : title) { Task { await social.perform(action, with: reader) } }
+        return Button { Task { await social.perform(action, with: reader) } } label: {
+            DesignSystemIconView(icon, size: TextualIconStyle.compact.size)
+        }
             .disabled(busy)
+            .accessibilityLabel(busy ? "Sending friend request" : "\(title) friend request")
             .accessibilityIdentifier("community.\(action.rawValue).\(reader.username)")
     }
 
@@ -244,11 +260,12 @@ struct SocialReaderRow<Actions: View>: View {
 struct ReaderAvatarBadge: View {
     let reader: SocialReader
     var size: CGFloat = 44
+    var circle = false
     @Environment(\.socialStore) private var social
     @State private var image: UIImage?
 
     var body: some View {
-        RoundedRectangle(cornerRadius: size * 0.22)
+        RoundedRectangle(cornerRadius: circle ? size / 2 : size * 0.22)
             .fill(Color.velvet.opacity(0.4))
             .overlay {
                 if let image {
@@ -259,9 +276,9 @@ struct ReaderAvatarBadge: View {
                         .foregroundStyle(Color.paper.opacity(0.8))
                 }
             }
-            .frame(width: size, height: size * 1.24)
-            .clipShape(RoundedRectangle(cornerRadius: size * 0.22))
-            .accessibilityHidden(true)
+            .frame(width: size, height: circle ? size : size * 1.24)
+            .clipShape(RoundedRectangle(cornerRadius: circle ? size / 2 : size * 0.22))
+            .accessibilityHidden(!circle)
             .task(id: reader.avatarPath) {
                 image = nil
                 guard let path = reader.avatarPath, let data = await social?.avatarData(path: path) else { return }

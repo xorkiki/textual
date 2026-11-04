@@ -144,6 +144,9 @@ final class SocialStore {
     private(set) var outgoing: [SocialReader] = []
     private(set) var friendsLoaded = false
     private(set) var friendsMessage: String?
+    private(set) var pendingRequestNotice = false
+    private(set) var hasUnreadFeed = false
+    var hasSocialNotice: Bool { pendingRequestNotice || hasUnreadFeed }
     /// Readers with a friendship change in flight ("sending"); never shown as friends early.
     private(set) var pending: Set<UUID> = []
 
@@ -187,6 +190,10 @@ final class SocialStore {
     @ObservationIgnored private var generation = UUID()
     @ObservationIgnored private let now: () -> Date
     @ObservationIgnored private var friendsTask: Task<Void, Never>?
+    @ObservationIgnored private var uploadedProfileGenres: [ProfileGenreEntry]?
+    @ObservationIgnored private var profileGenreTask: Task<Bool, Never>?
+    @ObservationIgnored private var indicatorTask: Task<Void, Never>?
+    @ObservationIgnored private let noticeDefaults = UserDefaults.standard
     /// Published card photos for rows and the feed; bounded and cleared with the account.
     @ObservationIgnored private let avatars: NSCache<NSString, NSData> = {
         let cache = NSCache<NSString, NSData>()
@@ -221,12 +228,15 @@ final class SocialStore {
         generation = UUID()
         settings.stop()
         friendsTask?.cancel()
+        profileGenreTask?.cancel()
+        indicatorTask?.cancel()
         profileRequests.values.forEach { $0.cancel() }
         profileRequests = [:]
         profiles = [:]
         profileOrder = []
         avatars.removeAllObjects()
         friends = []; incoming = []; outgoing = []; friendsLoaded = false; pending = []
+        pendingRequestNotice = false; hasUnreadFeed = false
         searchQuery = ""; searchResults = []; searchNext = nil; searchHasMore = false
         resetFeed()
         resetDiscovery()
@@ -239,6 +249,7 @@ final class SocialStore {
         await reloadFriends()
         if feedLoaded { await revalidateFeed() }
         if discoveryHasFriends != nil { await revalidateDiscovery() }
+        await refreshIndicator()
     }
 
     // MARK: Friends
@@ -261,6 +272,7 @@ final class SocialStore {
                 guard self.isCurrent(run) else { return }
                 self.friends = all
                 self.incoming = first.incoming
+                self.pendingRequestNotice = !first.incoming.isEmpty
                 self.outgoing = first.outgoing
                 self.friendsLoaded = true
                 self.friendsMessage = nil
@@ -272,6 +284,46 @@ final class SocialStore {
         friendsTask = task
         await task.value
         if isCurrent(run) { friendsTask = nil }
+    }
+
+    /// A one-row probe on launch/foreground avoids loading the entire social
+    /// graph or feed just to decide whether the navigation dot should appear.
+    func refreshIndicator() async {
+        guard active else { return }
+        if let indicatorTask { return await indicatorTask.value }
+        let run = generation
+        let task = Task { await self.performIndicatorRefresh(run: run) }
+        indicatorTask = task
+        await task.value
+        if isCurrent(run) { indicatorTask = nil }
+    }
+
+    private func performIndicatorRefresh(run: UUID) async {
+        async let requests = transport.friends(after: nil, limit: 1)
+        async let recent = transport.feed(cutoff: nil, before: nil, limit: 1)
+        let requestPage = try? await requests
+        let feedPage = try? await recent
+        guard isCurrent(run) else { return }
+        if let requestPage { pendingRequestNotice = !requestPage.incoming.isEmpty }
+        let key = "textual.social.lastSeenFeed.\(userID.uuidString)"
+        if let feedPage {
+            if let seen = noticeDefaults.object(forKey: key) as? Double,
+               let latest = feedPage.events.first?.publishedDate {
+                hasUnreadFeed = latest.timeIntervalSince1970 > seen
+            } else if noticeDefaults.object(forKey: key) == nil {
+                noticeDefaults.set(now().timeIntervalSince1970, forKey: key)
+                hasUnreadFeed = false
+            } else {
+                hasUnreadFeed = false
+            }
+        }
+    }
+
+    func markFeedSeen() {
+        guard active, feedLoaded else { return }
+        noticeDefaults.set(now().timeIntervalSince1970,
+                           forKey: "textual.social.lastSeenFeed.\(userID.uuidString)")
+        hasUnreadFeed = false
     }
 
     /// Server-confirmed: the UI shows "sending" until the server answers.
@@ -390,6 +442,49 @@ final class SocialStore {
             profiles[username] = nil
             throw SocialError.forbidden
         }
+    }
+
+    func profileFriends(username: String, after: String?, limit: Int = 40) async throws -> ProfileFriendsPage {
+        guard active else { throw SocialError.accountChanged }
+        let run = generation
+        let page = try await transport.profileFriends(username: username, after: after, limit: limit)
+        guard isCurrent(run) else { throw SocialError.accountChanged }
+        return page
+    }
+
+    @discardableResult
+    func publishProfileGenres(_ entries: [ProfileGenreEntry]) async -> Bool {
+        guard active else { return false }
+        if uploadedProfileGenres == entries { return true }
+        if let profileGenreTask {
+            _ = await profileGenreTask.value
+            guard active else { return false }
+            if uploadedProfileGenres == entries { return true }
+        }
+        let run = generation
+        let task = Task {
+            do {
+                try await transport.publishProfileGenres(userID: userID, entries: entries)
+                guard isCurrent(run) else { return false }
+                uploadedProfileGenres = entries
+                return true
+            } catch {
+                // A later profile sync retries; never block the card or local archive.
+                return false
+            }
+        }
+        profileGenreTask = task
+        let success = await task.value
+        if isCurrent(run) { profileGenreTask = nil }
+        return success
+    }
+
+    func genreBooks(username: String, genre: String, after: ProfileBooksPage.Cursor?) async throws -> ProfileBooksPage {
+        guard active else { throw SocialError.accountChanged }
+        let run = generation
+        let page = try await transport.genreBooks(username: username, genre: genre, after: after, limit: 30)
+        guard isCurrent(run) else { throw SocialError.accountChanged }
+        return page
     }
 
     func avatarData(path: String) async -> Data? {

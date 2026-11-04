@@ -3,6 +3,72 @@ import Observation
 import SwiftData
 import UIKit
 
+@MainActor
+private final class CoverResolutionBatch {
+    struct Pending {
+        let book: Book
+        let original: String?
+        var resolved: String
+    }
+
+    let context: ModelContext
+    var pending: [UUID: Pending] = [:]
+    var task: Task<Void, Never>?
+
+    init(context: ModelContext) { self.context = context }
+}
+
+/// Resolving covers is cache maintenance, so coalesce writes per SwiftData
+/// context instead of saving the entire library once for every visible image.
+@MainActor
+private enum CoverResolutionWriter {
+    private static var batches: [ObjectIdentifier: CoverResolutionBatch] = [:]
+    private static let delay: Duration = .milliseconds(350)
+
+    static func enqueue(_ book: Book, original: String?, url: String) {
+        guard !book.isRemovedFromLibrary, let context = book.modelContext else { return }
+        let key = ObjectIdentifier(context)
+        let batch = batches[key] ?? CoverResolutionBatch(context: context)
+        batches[key] = batch
+        let firstValue = batch.pending[book.id].map { $0.original } ?? original
+        batch.pending[book.id] = .init(book: book, original: firstValue, resolved: url)
+        batch.task?.cancel()
+        batch.task = Task { @MainActor in
+            do { try await Task.sleep(for: delay) } catch { return }
+            guard !Task.isCancelled else { return }
+            flush(batch, key: key)
+        }
+    }
+
+    private static func flush(_ batch: CoverResolutionBatch, key: ObjectIdentifier) {
+        guard batches[key] === batch else { return }
+        batch.task = nil
+        var changed: [CoverResolutionBatch.Pending] = []
+        for pending in batch.pending.values {
+            let book = pending.book
+            guard !book.isRemovedFromLibrary, book.modelContext === batch.context,
+                  book.resolvedCoverURL == pending.original else { continue }
+            book.resolvedCoverURL = pending.resolved
+            changed.append(pending)
+        }
+        batch.pending.removeAll(keepingCapacity: true)
+        guard !changed.isEmpty else {
+            batches.removeValue(forKey: key)
+            return
+        }
+        do {
+            try batch.context.save()
+        } catch {
+            // Restore only the cache fields this batch changed. Do not roll back
+            // unrelated user edits that may share this context.
+            for pending in changed where pending.book.resolvedCoverURL == pending.resolved {
+                pending.book.resolvedCoverURL = pending.original
+            }
+        }
+        if batch.pending.isEmpty { batches.removeValue(forKey: key) }
+    }
+}
+
 struct BookCoverIdentity: Hashable, Sendable {
     let title: String
     let author: String
@@ -129,16 +195,6 @@ extension Book {
     @MainActor func rememberCover(_ url: String) {
         guard !isRemovedFromLibrary, let normalized = BookCoverURL.normalized(url),
               normalized != BookCoverURL.normalized(coverURL), resolvedCoverURL != normalized else { return }
-        let previous = resolvedCoverURL
-        resolvedCoverURL = normalized
-        do { try modelContext?.save() }
-        catch { resolvedCoverURL = previous }
-    }
-
-    @MainActor var coverCandidates: [String] {
-        let cached = cachedCatalogMetadata.flatMap {
-            try? JSONDecoder().decode(BookCatalogService.BookItem.self, from: $0)
-        }?.volumeInfo?.imageLinks
-        return [resolvedCoverURL, coverURL, cached?.thumbnail, cached?.smallThumbnail].compactMap { $0 }
+        CoverResolutionWriter.enqueue(self, original: resolvedCoverURL, url: normalized)
     }
 }

@@ -23,7 +23,7 @@ enum GenreTaxonomy {
             for phrase in excluding {
                 padded = padded.replacingOccurrences(of: " " + phrase + " ", with: " ")
             }
-            return aliases.contains { padded.contains(" " + $0 + " ") }
+            return aliases.contains { padded.range(of: " " + $0 + " ", options: .literal) != nil }
         }
     }
 

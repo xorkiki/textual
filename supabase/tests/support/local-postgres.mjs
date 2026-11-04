@@ -38,7 +38,8 @@ grant select, insert, update on storage.objects to authenticated;
 export const BASE_MIGRATIONS = ['001_textual_accounts.sql', '003_textual_profiles.sql', '004_storygraph_import.sql',
     '005_public_reader_profiles.sql', '006_reader_profile_photos.sql', '007_reader_reviews.sql',
     '008_catalog_owned_classification.sql', '009_discovery.sql', '010_discovery_service_grants.sql'];
-export const SOCIAL_MIGRATIONS = ['011_social_graph.sql', '012_social_activity.sql'];
+export const SOCIAL_MIGRATIONS = ['011_social_graph.sql', '012_social_activity.sql',
+    '014_profile_friends.sql', '015_profile_genre_books.sql'];
 
 // macOS postmaster refuses to start without an explicit locale in the environment.
 const PG_ENV = { ...process.env, LC_ALL: 'en_US.UTF-8', LANG: 'en_US.UTF-8' };

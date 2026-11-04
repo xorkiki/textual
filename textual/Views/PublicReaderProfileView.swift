@@ -1,8 +1,10 @@
 import SwiftUI
+import SwiftData
 
 /// Navigation value for visiting a reader's public profile.
-struct ReaderRoute: Hashable {
+struct ReaderRoute: Hashable, Identifiable {
     let username: String
+    var id: String { username }
 }
 
 /// The existing public profile page for a selected reader, read through the
@@ -24,7 +26,8 @@ struct PublicReaderProfileView: View {
             if let profile {
                 PublicReaderProfilePage(firstName: profile.firstName, username: profile.username,
                                         content: profile.cardContent, avatarTransport: social?.avatarTransport,
-                                        hiddenStats: profile.hiddenStats, selectStat: { openedStat = $0 })
+                                        hiddenStats: profile.hiddenStats, selectStat: { openedStat = $0 },
+                                        isOwner: profile.isOwner)
                     .refreshable { await load(force: true) }
             } else if missing {
                 message("no card filed under that name. yet.")
@@ -74,16 +77,26 @@ struct PublicReaderProfileView: View {
         if let profile, !profile.isOwner, let social {
             let state = profile.relationship?.state ?? .none
             let busy = social.pending.contains(profile.userID)
-            Button(busy ? "Sending…" : Self.title(state)) {
-                switch state {
-                case .none: Task { await act(.send) }
-                case .incoming: Task { await act(.accept) }
-                case .outgoing: confirmation = .cancel
-                case .friends: confirmation = .remove
+            if state == .incoming {
+                Button { Task { await act(.accept) } } label: {
+                    DesignSystemIconView(.checkmark, size: TextualIconStyle.compact.size)
                 }
+                .buttonStyle(IconButtonStyle())
+                .disabled(busy)
+                .accessibilityLabel(busy ? "Sending friend request" : "Accept friend request")
+                .accessibilityIdentifier("profile.relationship")
+            } else {
+                Button(busy ? "Sending…" : Self.title(state)) {
+                    switch state {
+                    case .none: Task { await act(.send) }
+                    case .incoming: break
+                    case .outgoing: confirmation = .cancel
+                    case .friends: confirmation = .remove
+                    }
+                }
+                .disabled(busy)
+                .accessibilityIdentifier("profile.relationship")
             }
-            .disabled(busy)
-            .accessibilityIdentifier("profile.relationship")
         }
     }
 
@@ -150,7 +163,7 @@ struct ReaderStatSheet: View {
         switch stat {
         case .reads: ProfileBooksSheet(username: profile.username, list: .read, title: stat.title)
         case .rereads: ProfileBooksSheet(username: profile.username, list: .rereads, title: stat.title)
-        case .genres: ProfileGenresSheet(shares: profile.card?.genres.breakdown ?? [])
+        case .genres: ProfileGenresSheet(username: profile.username, shares: profile.card?.genres.breakdown ?? [])
         }
     }
 }
@@ -161,59 +174,125 @@ struct ProfileBooksSheet: View {
     let username: String
     let list: ProfileBookList
     let title: String
+    var genre: String? = nil
+    @Query(filter: #Predicate<Book> { !$0.isRemovedFromLibrary }) private var ownBooks: [Book]
+    @Environment(\.reviewLibraryRepository) private var repository
     @Environment(\.socialStore) private var social
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     @State private var books: [ProfileBook] = []
     @State private var next: ProfileBooksPage.Cursor?
     @State private var loaded = false
     @State private var loading = false
     @State private var failure: String?
     @State private var selectedBook: Book?
+    @State private var actionRoute: BookActionRoute?
+    @State private var saveError: String?
+    @State private var ownByCatalog: [String: Book] = [:]
+    @State private var ownByISBN: [String: Book] = [:]
 
     var body: some View {
         NavigationStack {
-            ZStack {
-                Color.inkwell.ignoresSafeArea()
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 20) {
-                        if loaded && books.isEmpty && failure == nil {
-                            TextualEmptyState(title: "No books yet", icon: .archive,
-                                detail: list == .read ? "Finished books will appear here." : "Books read more than once will appear here.")
-                                .foregroundStyle(Color.paper)
-                        } else {
-                            LazyVGrid(columns: [GridItem(.adaptive(minimum: 120), spacing: 16, alignment: .top)], spacing: 20) {
-                                ForEach(books) { book in
-                                    Button { selectedBook = book.detailBook() } label: {
-                                        BookCoverImage(urlString: book.coverURL ?? "", width: 120, height: 180,
-                                            identity: BookCoverIdentity(title: book.title, author: book.author, isbn: book.isbn ?? "",
-                                                catalogID: book.catalogID.hasPrefix("storygraph:") ? nil : book.catalogID))
-                                    }
-                                    .buttonStyle(.plain)
-                                    .accessibilityLabel("\(book.title) by \(book.author)")
-                                    .accessibilityHint("Open book details")
-                                    .onAppear { if book.id == books.last?.id { Task { await loadMore() } } }
-                                }
-                            }
-                        }
-                        if loading { ProgressView().tint(.paper).frame(maxWidth: .infinity) }
-                        if let failure {
-                            Text(failure).textStyle(.bodySmall).foregroundStyle(Color.ghost)
-                            Button("Try again") { Task { await loadMore() } }
-                                .buttonStyle(TextualButtonStyle(variant: .tonal))
-                        }
-                    }
-                    .padding(24)
-                }
-                .scrollIndicators(.hidden)
-            }
+            sheetContent
             .textualSheetHeader(title) { dismiss() }
             .sheet(item: $selectedBook) { book in
                 NavigationStack { BookDetailView(book: book, isPresentedAsSheet: true) }
             }
+            .sheet(item: $actionRoute) { route in BookActionSheet(route: route, repository: repository) }
+            .alert("Couldn’t add book", isPresented: Binding(get: { saveError != nil }, set: { if !$0 { saveError = nil } })) {
+                Button("OK") { saveError = nil }
+            } message: { Text(saveError ?? "") }
             .task { await loadMore() }
+            .onChange(of: ownBooks.map(\.id), initial: true) { _, _ in rebuildArchiveIndex() }
         }
         .preferredColorScheme(.dark)
-        .accessibilityIdentifier("profile.books.\(list.rawValue)")
+        .accessibilityIdentifier("profile.books.\(genre ?? list.rawValue)")
+    }
+
+    private var sheetContent: some View {
+        ZStack {
+            Color.inkwell.ignoresSafeArea()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    if loaded && books.isEmpty && failure == nil {
+                        TextualEmptyState(title: "No books yet", icon: .archive,
+                            detail: list == .rereads ? "Books read more than once will appear here." : "Finished books will appear here.")
+                            .foregroundStyle(Color.paper)
+                    } else {
+                        bookGrid
+                    }
+                    if loading { ProgressView().tint(.paper).frame(maxWidth: .infinity) }
+                    if let failure {
+                        Text(failure).textStyle(.bodySmall).foregroundStyle(Color.ghost)
+                        Button("Try again") { Task { await loadMore() } }
+                            .buttonStyle(TextualButtonStyle(variant: .tonal))
+                    }
+                }
+                .padding(TextualLayout.pageInset)
+            }
+            .scrollIndicators(.hidden)
+        }
+    }
+
+    private var bookGrid: some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 120), spacing: 16, alignment: .top)], spacing: 20) {
+            ForEach(books) { book in
+                cover(book)
+                    .onAppear { if book.id == books.last?.id { Task { await loadMore() } } }
+            }
+        }
+    }
+
+    private func cover(_ book: ProfileBook) -> some View {
+        let archived = archiveBook(for: book)
+        let actions = archived == nil ? BookAddStatus.allCases.map(\.menuAction) : BookQuickAction.allCases.map(\.menuAction)
+        return HoldSlideSource(actions: actions, isEnabled: scenePhase == .active,
+            open: { selectedBook = archived ?? book.detailBook() },
+            select: { action in select(action, for: book) }) {
+            BookCoverImage(urlString: book.coverURL ?? "", width: 120, height: 180,
+                identity: BookCoverIdentity(title: book.title, author: book.author, isbn: book.isbn ?? "",
+                    catalogID: book.catalogID.hasPrefix("storygraph:") ? nil : book.catalogID))
+        }
+        .frame(width: 120, height: 180)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(book.title) by \(book.author)")
+        .accessibilityHint("Open book details. Touch and hold for archive actions.")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { selectedBook = archived ?? book.detailBook() }
+        .modifier(ProfileCoverActions(archived: archived,
+            add: { add(book, status: $0) },
+            quick: { actionRoute = BookActionRoute(book: $0, action: $1) }))
+    }
+
+    private func rebuildArchiveIndex() {
+        ownByCatalog = Dictionary(ownBooks.compactMap { book in
+            book.googleBooksVolumeId.map { ($0, book) }
+        }, uniquingKeysWith: { first, _ in first })
+        ownByISBN = Dictionary(ownBooks.filter { !$0.isbn.isEmpty }.map { ($0.isbn, $0) },
+            uniquingKeysWith: { first, _ in first })
+    }
+
+    private func archiveBook(for book: ProfileBook) -> Book? {
+        ownByCatalog[book.catalogID] ?? book.isbn.flatMap { ownByISBN[$0] }
+    }
+
+    private func select(_ action: String, for book: ProfileBook) {
+        if let archived = archiveBook(for: book), let quick = BookQuickAction(rawValue: action) {
+            actionRoute = BookActionRoute(book: archived, action: quick)
+        } else if let status = BookAddStatus(rawValue: action) {
+            add(book, status: status)
+        }
+    }
+
+    private func add(_ book: ProfileBook, status: BookAddStatus) {
+        guard archiveBook(for: book) == nil, let repository else { return }
+        do {
+            try repository.add(book.detailBook(), status: status)
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+            Task { await repository.synchronize() }
+        } catch {
+            saveError = "The book couldn’t be saved to your archive. Please try again."
+        }
     }
 
     private func loadMore() async {
@@ -221,7 +300,12 @@ struct ProfileBooksSheet: View {
         loading = true
         defer { loading = false }
         do {
-            let page = try await social.books(username: username, list: list, after: next)
+            let page: ProfileBooksPage
+            if let genre {
+                page = try await social.genreBooks(username: username, genre: genre, after: next)
+            } else {
+                page = try await social.books(username: username, list: list, after: next)
+            }
             books += page.books.filter { book in !books.contains { $0.id == book.id } }
             next = page.next
             loaded = true
@@ -237,22 +321,58 @@ struct ProfileBooksSheet: View {
     }
 }
 
+private struct ProfileCoverActions: ViewModifier {
+    let archived: Book?
+    let add: (BookAddStatus) -> Void
+    let quick: (Book, BookQuickAction) -> Void
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if let archived {
+            content
+                .accessibilityAction(named: "Save quote") { quick(archived, .quote) }
+                .accessibilityAction(named: "Update progress") { quick(archived, .progress) }
+                .accessibilityAction(named: "Finish and rate") { quick(archived, .finish) }
+                .accessibilityAction(named: "Add note") { quick(archived, .note) }
+        } else {
+            content
+                .accessibilityAction(named: "Add as read") { add(.read) }
+                .accessibilityAction(named: "Add as currently reading") { add(.currentlyReading) }
+                .accessibilityAction(named: "Add as to be read") { add(.tbr) }
+                .accessibilityAction(named: "Add as did not finish") { add(.dnf) }
+        }
+    }
+}
+
 /// The Stats genre chart, read-only for visitors.
 struct ProfileGenresSheet: View {
+    let username: String
     let shares: [ReaderGenreShare]
     @Environment(\.dismiss) private var dismiss
+    @State private var selectedGenre: GenreSelection?
+
+    private struct GenreSelection: Identifiable {
+        let name: String
+        var id: String { name }
+    }
 
     var body: some View {
         NavigationStack {
             ZStack {
                 Color.inkwell.ignoresSafeArea()
                 ScrollView {
-                    GenreStatsChart(genres: shares.map { GenreStat(name: $0.name, count: $0.reads ?? $0.books) }, onSelect: nil)
+                    GenreStatsChart(genres: shares.map { GenreStat(name: $0.name, count: $0.reads ?? $0.books) },
+                                    showsHeading: false) {
+                        selectedGenre = GenreSelection(name: $0)
+                    }
                         .padding(24)
                 }
                 .scrollIndicators(.hidden)
             }
             .textualSheetHeader(ReaderCardStat.genres.title) { dismiss() }
+            .sheet(item: $selectedGenre) { genre in
+                ProfileBooksSheet(username: username, list: .read, title: genre.name, genre: genre.name)
+            }
         }
         .preferredColorScheme(.dark)
         .accessibilityIdentifier("profile.genres")

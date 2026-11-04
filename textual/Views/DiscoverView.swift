@@ -84,6 +84,14 @@ struct DiscoverView: View {
     @State private var openedBook: Book?
     @State private var route: BookActionRoute?
     @State private var saveError: String?
+    @State private var displayedVersions: [DiscoveryCollection: Int] = [:]
+    @State private var feedGeneration = UUID()
+    private var isVisible: Bool { isActive && scenePhase == .active }
+    private struct FeedTrigger: Equatable {
+        let visible: Bool
+        let revision: Int
+    }
+
     /// New each session: Explore varies between visits but holds still while browsing.
     @State private var exploreSeed = UInt64.random(in: .min ... .max)
 
@@ -115,14 +123,22 @@ struct DiscoverView: View {
         }
         .background {
             if let discovery {
-                DiscoverForYouObserver(userID: repository.userID, discovery: discovery)
+                DiscoverForYouObserver(userID: repository.userID, discovery: discovery, isActive: isVisible)
             }
         }
-        .task {
-            rebuildFeeds()
+        .task(id: isVisible) {
+            guard isVisible else { return }
+            // Refresh expiry-sensitive cached values when Home returns to view.
+            await rebuildFeeds(force: true)
+            guard !Task.isCancelled else { return }
             await discovery?.refreshAll()
         }
-        .onChange(of: discovery?.revision) { _, _ in rebuildFeeds() }
+        .task(id: FeedTrigger(visible: isVisible, revision: isVisible ? (discovery?.revision ?? 0) : 0)) {
+            guard isVisible else { return }
+            // A remote refresh can update three collections in a short burst.
+            do { try await Task.sleep(for: .milliseconds(150)) } catch { return }
+            await rebuildFeeds()
+        }
         .onChange(of: books.map(\.id), initial: true) { _, _ in
             archive = DiscoveryArchiveIndex(books: books)
             offerFriends()
@@ -134,12 +150,15 @@ struct DiscoverView: View {
             // An empty tab checks again when opened (still subject to failure backoff).
             else if let current, feeds[current]?.items.isEmpty == true { Task { await refreshQuietly(current) } }
         }
+        .onChange(of: isVisible) { _, visible in
+            if !visible { feedGeneration = UUID() }
+        }
         .onChange(of: isActive) { _, active in
             if !active { feeds.values.forEach { $0.adoptPending() } }
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .background { feeds.values.forEach { $0.adoptPending() } }
-            if phase == .active, isActive { Task { await discovery?.refreshAll() } }
+
         }
     }
 
@@ -180,12 +199,31 @@ struct DiscoverView: View {
 
     // MARK: Data
 
-    private func rebuildFeeds() {
-        guard let discovery else { return }
-        feeds[.trending]?.offer(discovery.items(.trending))
-        let newReleases = discovery.items(.newReleases).map { $0.withFacet("new-releases") }
-        feeds[.explore]?.offer(DiscoveryExploreOrder.order(discovery.items(.explore) + newReleases, seed: exploreSeed))
-        feeds[.forYou]?.offer(discovery.items(.forYou))
+    private func rebuildFeeds(force: Bool = false) async {
+        guard let discovery, isVisible, !Task.isCancelled else { return }
+        let run = UUID()
+        feedGeneration = run
+        for (collection, tab) in [(DiscoveryCollection.trending, DiscoverTab.trending), (.forYou, .forYou)] {
+            let version = discovery.collectionRevision(collection)
+            if force || displayedVersions[collection] != version {
+                feeds[tab]?.offer(discovery.items(collection))
+                displayedVersions[collection] = version
+            }
+        }
+        let exploreVersion = discovery.collectionRevision(.explore)
+        let newVersion = discovery.collectionRevision(.newReleases)
+        guard force || displayedVersions[.explore] != exploreVersion || displayedVersions[.newReleases] != newVersion else { return }
+        let items = discovery.items(.explore) + discovery.items(.newReleases).map { $0.withFacet("new-releases") }
+        do {
+            let ordered = try await discovery.feedWorker.explore(items, seed: exploreSeed)
+            try Task.checkCancellation()
+            guard feedGeneration == run,
+                  discovery.collectionRevision(.explore) == exploreVersion,
+                  discovery.collectionRevision(.newReleases) == newVersion else { return }
+            feeds[.explore]?.offer(ordered)
+            displayedVersions[.explore] = exploreVersion
+            displayedVersions[.newReleases] = newVersion
+        } catch { /* Keep the current feed when a newer request supersedes this one. */ }
     }
 
     /// Friends' books outside the reader's archive (edition, ISBN, or work match),
@@ -205,7 +243,8 @@ struct DiscoverView: View {
 
     private func refresh(_ tab: DiscoverTab) async {
         await discovery?.refreshAll(force: true)
-        rebuildFeeds()
+        await rebuildFeeds(force: true)
+        guard !Task.isCancelled else { return }
         feeds[tab]?.adoptPending()
     }
 
@@ -425,93 +464,62 @@ private struct DiscoverCoverActions: ViewModifier {
 private struct DiscoverForYouObserver: View {
     let userID: UUID
     let discovery: DiscoveryRepository
+    let isActive: Bool
     @Query(filter: #Predicate<Book> { !$0.isRemovedFromLibrary }) private var books: [Book]
     @Query private var profiles: [ReaderProfileDraft]
     @Query private var reviews: [ReaderReviewDraft]
 
     private struct Trigger: Equatable {
-        let books: [UUID]
-        let reading: [Data?]
-        let favorites: Data?
-        let reviews: [Data?]
+        let inputs: [DiscoveryTasteInput]
+        let profile: Data?
         let pools: Int
     }
 
-    var body: some View {
-        let profile = profiles.first { $0.userID == userID }
-        let trigger = Trigger(books: books.map(\.id), reading: books.map(\.storyGraphData),
-                              favorites: profile?.contentData,
-                              reviews: reviews.filter { $0.userID == userID }.map { $0.pendingData ?? $0.remoteData },
-                              pools: discovery.revision)
-        Color.clear.frame(width: 0, height: 0).accessibilityHidden(true)
-            .task(id: trigger) {
-                // Debounce bursts (imports, sync) and give the visible screen priority.
-                do { try await Task.sleep(for: .milliseconds(1500)) } catch { return }
-                await rank()
-            }
-    }
-
-    private func tasteBooks() -> [DiscoveryTasteBook] {
-        let favorites = profiles.first { $0.userID == userID }?.content?.favorites ?? []
+    private var trigger: Trigger? {
+        // Hidden pages retain their state without decoding or ranking the library.
+        guard isActive else { return nil }
         let drafts = Dictionary(reviews.filter { $0.userID == userID }.map { ($0.localBookID, $0) },
                                 uniquingKeysWith: { first, _ in first })
-        var matched = Set<UUID>()
-        var result = books.map { book -> DiscoveryTasteBook in
-            let rank = favorites.firstIndex { $0.matches(book) }
-            if let rank { matched.insert(favorites[rank].id) }
-            let quarterStars = ReaderReviewPresentation(book: book, draft: drafts[book.id]).content?.rating
-            return DiscoveryTasteBook(catalogID: book.googleBooksVolumeId, title: book.title, author: book.author,
-                isbns: [book.isbn], genres: StatsMetadataCache.genres(book), status: book.importedReading?.status,
-                rating: quarterStars.map { Double($0) / 4 }, favoriteRank: rank)
-        }
-        // Shelf favorites that are no longer in the archive still describe taste.
-        for (rank, favorite) in favorites.enumerated() where !matched.contains(favorite.id) {
-            result.append(DiscoveryTasteBook(catalogID: favorite.catalogID, title: favorite.title,
-                author: favorite.author, isbns: [favorite.isbn], favoriteRank: rank))
-        }
-        return result
+        return Trigger(inputs: books.map { DiscoveryTasteInput(book: $0, draft: drafts[$0.id]) },
+                       profile: profiles.first { $0.userID == userID }?.contentData,
+                       pools: discovery.rankingInputRevision)
     }
 
-    private func rank() async {
-        let taste = tasteBooks()
-        let now = Date()
-        let seed = DiscoverySeed.daily(userID: userID, date: now)
-        await refreshAuthorCandidates(taste)
-        let pools: [DiscoveryCollection] = [.trending, .newReleases, .explore, .forYouAuthors]
-        let poolStamp = pools.map { "\($0.rawValue):\(discovery.state($0)?.fetchedAt?.timeIntervalSince1970 ?? 0)" }
-        let tasteStamp = taste.map {
-            "\($0.catalogID ?? "")|\($0.title)|\($0.author)|\($0.status ?? "")|\($0.rating ?? -1)|\($0.favoriteRank ?? -1)|\($0.genres.sorted().joined(separator: ","))"
-        }.sorted()
-        let signature = DiscoverySeed.signature(["v1", String(seed)] + poolStamp + tasteStamp)
-        guard discovery.state(.forYou)?.inputSignature != signature || discovery.items(.forYou).isEmpty else { return }
-
-        var collections: [String: Set<String>] = [:]
-        var items: [String: DiscoverItem] = [:]
-        for pool in pools {
-            for item in discovery.items(pool) {
-                items[item.catalogID] = items[item.catalogID] ?? item
-                collections[item.catalogID, default: []].insert(pool == .forYouAuthors ? "author" : pool.rawValue)
+    var body: some View {
+        let input = trigger
+        Color.clear.frame(width: 0, height: 0).accessibilityHidden(true)
+            .task(id: input) {
+                guard let input else { return }
+                do {
+                    try await Task.sleep(for: .milliseconds(1500))
+                    try await rank(input)
+                } catch { /* Superseded work never publishes a stale ranking. */ }
             }
+    }
+
+    private func rank(_ input: Trigger) async throws {
+        let taste = try await discovery.feedWorker.taste(input.inputs, profileData: input.profile)
+        let authors = try await discovery.feedWorker.favoriteAuthors(taste)
+        try Task.checkCancellation()
+        await refreshAuthorCandidates(authors)
+        try Task.checkCancellation()
+        guard trigger == input else { return }
+        let pools = [DiscoveryCollection.trending, .newReleases, .explore, .forYouAuthors].map {
+            DiscoveryPool(collection: $0, items: discovery.items($0), fetchedAt: discovery.state($0)?.fetchedAt)
         }
-        guard !items.isEmpty else { return }
-        let candidates = items.values.map { DiscoveryCandidate(item: $0, collections: collections[$0.catalogID] ?? []) }
-            .sorted { $0.item.catalogID < $1.item.catalogID }
-        let ranked = await Task.detached(priority: .utility) {
-            DiscoveryRecommender.recommend(books: taste, candidates: candidates, seed: seed)
-        }.value
-        guard !Task.isCancelled else { return }
-        try? discovery.store(ranked.map { ($0.item, $0.reasons) }, in: .forYou, signature: signature)
+        let ranked = try await discovery.feedWorker.rank(taste: taste, pools: pools,
+            seed: DiscoverySeed.daily(userID: userID, date: Date()),
+            previousSignature: discovery.state(.forYou)?.inputSignature,
+            hasCachedResults: !discovery.items(.forYou).isEmpty)
+        try Task.checkCancellation()
+        guard trigger == input, let ranked else { return }
+        try discovery.store(ranked.recommendations.map { ($0.item, $0.reasons) },
+                            in: .forYou, signature: ranked.signature)
     }
 
     /// Other books by the reader's most-loved authors, looked up at most weekly and
     /// only when those authors change. Uses the shared, rate-limited catalog service.
-    private func refreshAuthorCandidates(_ taste: [DiscoveryTasteBook]) async {
-        let profile = DiscoveryRecommender.profile(taste)
-        var names: [String: String] = [:]
-        for book in taste { names[DiscoveryIdentity.primaryAuthorKey(book.author)] = names[DiscoveryIdentity.primaryAuthorKey(book.author)] ?? book.author.components(separatedBy: ",").first }
-        let authors = profile.authors.filter { $0.value >= 4 && $0.key != "unknown author" }
-            .sorted { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }.prefix(4)
-            .compactMap { names[$0.key]?.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private func refreshAuthorCandidates(_ authors: [String]) async {
         let signature = DiscoverySeed.signature(["authors-v1"] + authors)
         let state = discovery.state(.forYouAuthors)
         if state?.inputSignature == signature, let fetched = state?.fetchedAt,

@@ -42,8 +42,16 @@ struct ArchiveBooksView: View {
         let catalog = readingLibrary == nil ? ArchiveFilterCatalog(books: books) : nil
         let options = readingLibrary?.snapshot.archive.options ?? catalog!.options
         let ids = readingLibrary?.snapshot.archive.matching(filter, search: search, excluding: queuedIDs)
-        let filteredBooks = (ids.map { ids in books.filter { ids.contains($0.id) } } ?? catalog!.books(matching: filter)).filter { book in
-            !queuedIDs.contains(book.id) && (search.isEmpty || book.title.localizedStandardContains(search) || book.author.localizedStandardContains(search))
+        let filteredBooks: [Book] = if let ids {
+            // ArchiveSnapshot already applies status, metadata, search, and queue
+            // filters. Map its result to SwiftData models in one pass.
+            books.filter { ids.contains($0.id) }
+        } else {
+            catalog!.books(matching: filter).filter { book in
+                !queuedIDs.contains(book.id)
+                    && (search.isEmpty || book.title.localizedStandardContains(search)
+                        || book.author.localizedStandardContains(search))
+            }
         }
         let visibleBooks = sortOrder.sorted(filteredBooks)
         Group {

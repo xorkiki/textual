@@ -120,6 +120,14 @@ private actor CommunityHarnessTransport: SocialTransport {
         return try decode(["friends": state("friends"), "incoming": state("incoming"), "outgoing": state("outgoing"),
                            "next": NSNull()] as [String: Any])
     }
+    func profileFriends(username: String, after: String?, limit: Int) async throws -> ProfileFriendsPage {
+        let visible = [readers[1], readers[2], readers[5]].map(withRelationship)
+        return try decode(["friends": visible, "next": NSNull()] as [String: Any])
+    }
+    func publishProfileGenres(userID: UUID, entries: [ProfileGenreEntry]) async throws {}
+    func genreBooks(username: String, genre: String, after: ProfileBooksPage.Cursor?, limit: Int) async throws -> ProfileBooksPage {
+        try await books(username: username, list: .read, after: after, limit: limit)
+    }
     func updateFriendship(userID: UUID, operationID: UUID, action: FriendshipAction, target: UUID,
                           requestID: UUID?) async throws -> FriendshipResult {
         try await Task.sleep(for: .milliseconds(1500))

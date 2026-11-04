@@ -17,6 +17,7 @@ final class CommunityUITests: XCTestCase {
     }
 
     @MainActor private func openProfile(_ app: XCUIApplication, _ username: String) {
+        app.buttons["community.tab.friends"].tap()
         let row = app.buttons["community.reader.\(username)"]
         XCTAssertTrue(row.waitForExistence(timeout: 10), "\(username) is listed")
         row.tap()
@@ -26,14 +27,7 @@ final class CommunityUITests: XCTestCase {
     @MainActor func testFriendsAndFeedUseTheArchiveTabBar() {
         let app = launch()
         let friends = app.buttons["community.tab.friends"], feed = app.buttons["community.tab.feed"]
-        XCTAssertTrue(friends.waitForExistence(timeout: 10))
-        XCTAssertTrue(friends.isSelected, "Friends opens first")
-        XCTAssertTrue(app.buttons["community.accept.eli_reads"].waitForExistence(timeout: 5), "incoming requests can be accepted")
-        XCTAssertTrue(app.buttons["community.decline.eli_reads"].exists, "and declined")
-        XCTAssertTrue(app.buttons["community.reader.fern"].exists, "sent requests are listed")
-        XCTAssertTrue(app.buttons["community.reader.bea"].exists, "friends are listed")
-
-        feed.tap()
+        XCTAssertTrue(feed.waitForExistence(timeout: 10))
         waitFor("isSelected == true", feed)
         XCTAssertTrue(app.staticTexts["finished reading and reviewed it"].waitForExistence(timeout: 5),
                       "a finish and its review read as one update")
@@ -41,6 +35,13 @@ final class CommunityUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Fear is a funny thing; it only follows you if you let it lead."].exists)
         XCTAssertFalse(app.buttons.matching(NSPredicate(format: "label CONTAINS[c] 'like' OR label CONTAINS[c] 'comment'")).firstMatch.exists,
                        "the feed is view-only")
+
+        friends.tap()
+        waitFor("isSelected == true", friends)
+        XCTAssertTrue(app.buttons["community.accept.eli_reads"].waitForExistence(timeout: 5), "incoming requests can be accepted")
+        XCTAssertTrue(app.buttons["community.decline.eli_reads"].exists, "and declined")
+        XCTAssertTrue(app.buttons["community.reader.fern"].exists, "sent requests are listed")
+        XCTAssertTrue(app.buttons["community.reader.bea"].exists, "friends are listed")
     }
 
     @MainActor func testAFriendsLibraryCardOpensTheirBooksAndGenres() {
@@ -49,6 +50,15 @@ final class CommunityUITests: XCTestCase {
         XCTAssertTrue(app.otherElements["profile.libraryCard"].waitForExistence(timeout: 5), "the existing library card")
         XCTAssertFalse(app.buttons["profile.addFavorites"].exists, "visitors can’t add to the shelf")
         XCTAssertFalse(app.buttons["profile.editShelf"].exists, "or rearrange it")
+        let allFriends = app.buttons["profile.allFriends"]
+        for _ in 0..<3 where !allFriends.exists { app.scrollViews.firstMatch.swipeUp() }
+        XCTAssertTrue(allFriends.waitForExistence(timeout: 5), "a compact friends preview sits above the bookshelf")
+        allFriends.tap()
+        XCTAssertTrue(app.staticTexts["Beatrix"].waitForExistence(timeout: 5), "the full list shows names")
+        XCTAssertTrue(app.buttons["profile.addFriend.beatrix"].waitForExistence(timeout: 5),
+                      "other readers can be added from the list")
+        app.buttons["Close"].firstMatch.tap()
+        app.scrollViews.firstMatch.swipeDown()
         let reads = app.buttons["profile.stat.reads"]
         XCTAssertTrue(reads.waitForExistence(timeout: 5))
         reads.tap()
@@ -64,8 +74,13 @@ final class CommunityUITests: XCTestCase {
         let genres = app.buttons["profile.stat.genres"]
         XCTAssertTrue(genres.waitForExistence(timeout: 5))
         genres.tap()
-        XCTAssertTrue(app.otherElements["profile.genres"].waitForExistence(timeout: 5) || app.staticTexts["Fantasy"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["Fantasy"].exists, "the Stats genre chart")
+        XCTAssertTrue(app.otherElements["profile.genres"].waitForExistence(timeout: 5) || app.buttons["Fantasy"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.staticTexts.matching(identifier: "Genres").count, 1,
+                       "the social preview keeps only its top header")
+        XCTAssertTrue(app.buttons["Fantasy"].exists, "the Stats genre chart")
+        app.buttons["Fantasy"].tap()
+        XCTAssertTrue(app.buttons["Onyx Storm by Rebecca Yarros"].waitForExistence(timeout: 5), "a genre opens a cover-only list")
+        app.buttons["Close"].firstMatch.tap()
         app.buttons["Close"].firstMatch.tap()
 
         app.buttons["profile.stat.rereads"].tap()
@@ -83,6 +98,7 @@ final class CommunityUITests: XCTestCase {
 
     @MainActor func testAddingAFriendWaitsForTheServer() {
         let app = launch()
+        app.buttons["community.tab.friends"].tap()
         let search = app.textFields["Search by name or username"]
         XCTAssertTrue(search.waitForExistence(timeout: 10))
         search.tap()
